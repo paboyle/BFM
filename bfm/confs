@@ -1,0 +1,27 @@
+
+PREFIX=/Users/peterboyle/CPC/SciDac/install/
+INSTALL=/Users/peterboyle/CPC/install/
+
+###################################
+# Single node test configurations
+###################################
+# NOARCH version of vanilla powerpc kernels (QCDOC), stream memory order
+#./configure --prefix=$PREFIX --with-bagel=$INSTALL --enable-target-cpu=noarch --enable-noarchbgl  --disable-qdp --enable-strategy=stream
+
+# NOARCH version of double Hummer BlueGene kernels, stream memory order
+#./configure --prefix=$PREFIX --with-bagel=$INSTALL --enable-target-cpu=noarch --disable-noarchbgl --disable-qdp --enable-strategy=cache 
+
+# NOARCH version of double Hummer BlueGene kernels, cache memory order
+#./configure --prefix=$PREFIX --with-bagel=$INSTALL --enable-target-cpu=noarch --disable-noarchbgl --disable-qdp --enable-strategy=stream
+
+###################################
+# MPP configurations
+###################################
+# assembler version of vanilla powerpc kernels (QCDOC), stream memory order
+#./configure --prefix=$PREFIX --with-bagel=$INSTALL --enable-target-cpu=ppc440 --enable-noarchbgl  --enable-qdp --enable-strategy=stream
+
+# assembler version of double Hummer BlueGene kernels, stream memory order
+#./configure --prefix=$PREFIX --with-bagel=$INSTALL --enable-target-cpu=bgl --disable-noarchbgl --enable-qdp --enable-strategy=cache 
+
+# assembler version of double Hummer BlueGene kernels, cache memory order
+#./configure --prefix=$PREFIX --with-bagel=$INSTALL --enable-target-cpu=bgl --disable-noarchbgl --enable-qdp --enable-strategy=stream

@@ -1,0 +1,7 @@
+01/Feb/2004: added prototype for do_prefetch to write_1pg5axpy
+
+	     changed C++ style comments to C style ones in the 
+	     bagel library. Now compiles under xlc
+
+	     renamed 434Mflops qcdoc_recon and qcdoc_decom to 
+	     qcdoc_recon_434 and qcdoc_decom_434

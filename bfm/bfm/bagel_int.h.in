@@ -1,0 +1,8 @@
+#ifndef BAGEL_INT_H
+#define BAGEL_INT_H
+#include <stdint.h>
+
+typedef @bagel_ITYPE@        integer;
+typedef @bagel_ISTYPE@ short_integer;
+
+#endif

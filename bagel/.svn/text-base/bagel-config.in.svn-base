@@ -1,0 +1,192 @@
+# Be on the lookout for problems with undesirable CXXFLAGS and LDFLAGS
+# propagating through this script.  Send email to flemingg@jlab.org
+# if you find such a problem.
+                                                                                
+prefix="@prefix@"
+exec_prefix="@exec_prefix@"
+exec_prefix_set=no
+                                                                                
+version="@VERSION@"
+
+bagel_cxx="@CXX@"
+bagel_cxxflags="@CXXFLAGS@ -I@includedir@"
+bagel_ldflags="@LDFLAGS@ -L@libdir@"
+bagel_libs="-lbagel @LIBS@"
+#
+bagel_istype="@ac_ISTYPE@"
+bagel_issize="@ac_ISSIZE@"
+bagel_isfmt="@ac_ISFMT@"
+#
+bagel_itype="@ac_ITYPE@"
+bagel_isize="@ac_ISIZE@"
+bagel_ifmt="@ac_IFMT@"
+
+usage()
+{
+  cat <<EOF
+Usage: bagel-config [OPTIONS]
+Options:
+  [--prefix[=DIR]]
+  [--exec-prefix[=DIR]]
+  [--version]
+  [--cxx]
+  [--cxxflags]
+  [--ldflags]
+  [--libs]
+  [--itype]
+  [--isize]
+  [--ifmt]
+  [--istype]
+  [--issize]
+  [--isfmt]
+                                                                                
+EOF
+  exit $1
+}
+
+if test $# -eq 0; then
+  usage 1 1>&2
+fi
+
+
+while test $# -gt 0; do
+  case "$1" in
+    -*=*) optarg=`echo "$1" | sed 's/[-_a-zA-Z0-9]*=//'` ;;
+    *)    optarg= ;;
+  esac
+                                                                                
+  case $1 in
+    --prefix=*)
+      prefix=$optarg
+      if test $exec_prefix_set = no ; then
+        exec_prefix=$optarg
+      fi
+      ;;
+    --prefix)
+      echo_prefix=yes
+      ;;
+                                                                                
+    --exec-prefix=*)
+      exec_prefix=$optarg
+      exec_prefix_set=yes
+      ;;
+                                                                                
+    --exec-prefix)
+      echo_exec_prefix=yes
+      ;;
+                                                                                
+    --version)
+      echo $version
+      ;;
+
+    --cxx)
+      echo $bagel_cxx
+      ;;
+                                                                                
+    --cxxflags)
+      echo_cxxflags=yes
+      ;;
+                                                                                
+    --ldflags)
+      echo_ldflags=yes
+      ;;
+                                                                                
+    --libs)
+      echo_libs=yes
+      ;;
+
+    --itype)
+      echo $bagel_itype
+      ;;
+    --isize)
+      echo $bagel_isize
+      ;;
+    --ifmt)
+      echo $bagel_ifmt
+      ;;
+
+    --istype)
+      echo $bagel_istype
+      ;;
+    --issize)
+      echo $bagel_issize
+      ;;
+    --isfmt)
+      echo $bagel_isfmt
+      ;;
+
+    --nsimd)
+      shift
+      case $1 in 
+      noarch-vmx) echo 4;;
+      noarch-bgq) echo 2;;
+      bgq) echo 2;;
+      *) echo 1;;
+      esac
+      ;;
+  *)
+      usage 1 1>&2
+      ;;
+                                                                                
+  esac
+  shift
+done
+
+if test "X${echo_prefix}X" = "XyesX" ; then
+  echo $prefix
+fi
+                                                                                
+if test "X${echo_exec_prefix}X" = "XyesX" ; then
+  echo $exec_prefix
+fi
+
+if test "X${echo_itype}X" = "XyesX" ; then
+  echo $bagel_itype
+fi
+                                                                                
+if test "X${echo_cxxflags}X" = "XyesX" ; then
+  output_cxxflags=
+  for i in $bagel_cxxflags ; do
+    case $i in
+      -I/usr/include) ;;
+      -g) ;;
+#     -O*) ;;
+#     -W*) ;;
+      *)
+        case " $output_cflags " in
+          *\ $i\ *) ;;                             # already there, skip it
+          *) output_cxxflags="$output_cxxflags $i" # add it to output
+        esac
+    esac
+  done
+  echo $output_cxxflags
+fi
+
+
+if test "X${echo_ldflags}X" = "XyesX" ; then
+  output_ldflags=
+  for i in $bagel_ldflags ; do
+    if test "X${i}X" != "X-I/usr/libX" ; then
+      case " $output_ldflags " in
+        *\ $i\ *) ;;                               # already there, skip it
+        *) output_ldflags="$output_ldflags $i"     # add it to output
+      esac
+    fi
+  done
+  echo $output_ldflags
+fi
+
+if test "X${echo_libs}X" = "XyesX" ; then
+  rev_libs=
+  for i in $bagel_libs ; do
+    rev_libs="$i $rev_libs"
+  done
+  output_libs=
+  for i in $rev_libs ; do
+    case " $output_libs " in
+      *\ $i\ *) ;;                         # already there, skip it
+      *) output_libs="$i $output_libs" ;;  # add it to output in reverse order
+    esac
+  done
+  echo $output_libs
+fi

@@ -1,0 +1,14 @@
+#ifndef BAGEL_INT_H
+#define BAGEL_INT_H
+
+#include <stdint.h>
+
+#define BAGEL_ITYPE "@ac_ITYPE@"
+#define BAGEL_ISIZE @ac_ISIZE@
+#define BAGEL_IFMT "@ac_IFMT@"
+
+#define BAGEL_ISTYPE "@ac_ISTYPE@"
+#define BAGEL_ISSIZE @ac_ISSIZE@
+#define BAGEL_ISFMT "@ac_ISFMT@"
+
+#endif

@@ -1,0 +1,237 @@
+#include <chroma.h>
+#include <actions/ferm/invert/syssolver_linop_cg_array.h>
+#include <bfm_qdp.h>
+#include <eigen/Krylov_5d.h>
+
+//typedef bfm bfm_t;
+//typedef commQMPbagel1<double> bfm_t;
+
+using namespace Chroma;
+
+typedef LatticeFermion T;
+typedef multi1d<LatticeFermion> T5;
+typedef multi1d<LatticeColorMatrix> U;
+
+
+//#define Printf if ( QMP_is_primary_node() ) printf
+#define Printf printf
+
+int main (int argc,char **argv )
+{
+  Chroma::initialize(&argc,&argv);
+
+  /********************************************************
+   * Command line parsing
+   ********************************************************
+   */
+
+  if ( argc < 10 ) { 
+   Printf("Usage: %s lx ly lz lt Ls Nwanted Tn off rad\n All must be even\n",argv[0]);
+   Printf("Good test: D_oo 4 4 4 4 4 10 30 1.0 6.0");
+   Printf("argc is %d\n",argc);
+   for ( int i=0;i<argc;i++){
+      Printf("%d %s\n",i,argv[i]);
+   }
+      exit(-1);
+
+  }
+
+  /********************************************************
+   * Setup QDP
+   ********************************************************
+   */
+  multi1d<int> nrow(Nd);
+  nrow[0] = atoi(argv[1]);
+  nrow[1] = atoi(argv[2]);
+  nrow[2] = atoi(argv[3]);
+  nrow[3] = atoi(argv[4]);
+  int Ls = atoi(argv[5]);
+
+  Layout::setLattSize(nrow);
+  Layout::create();
+
+  int lx = QDP::Layout::subgridLattSize()[0];
+  int ly = QDP::Layout::subgridLattSize()[1];
+  int lz = QDP::Layout::subgridLattSize()[2];
+  int lt = QDP::Layout::subgridLattSize()[3];
+
+  /********************************************************
+   * Setup DWF operator
+   ********************************************************
+   */
+   bfmarg dwfa;
+  bfm_qdp<double> dwf;
+
+  double M5 = 1.8;
+  double mq = 0.1;
+
+  //Physics parameters
+  dwfa.solver       = DWFrb4d; //DWFrb4d = 4d preconditioning. DWF = 5d preconditioning
+  dwfa.Ls           = Ls;
+  dwfa.mass         = mq;
+  dwfa.M5           = M5;
+  dwfa.precon_5d    = 0;
+  dwfa.max_iter     = 10000 ;
+  dwfa.residual     = 1e-10;
+  //Geometry
+  dwfa.node_latt[0] = QDP::Layout::subgridLattSize()[0];
+  dwfa.node_latt[1] = QDP::Layout::subgridLattSize()[1];
+  dwfa.node_latt[2] = QDP::Layout::subgridLattSize()[2];
+  dwfa.node_latt[3] = QDP::Layout::subgridLattSize()[3];
+
+  multi1d<int> procs = QDP::Layout::logicalSize();
+  QDPIO::cout << procs.size() << " dim machine\n\t" << endl;
+  for(int mu=0;mu<4;mu++){
+    QDPIO::cout << procs[mu] << " ";
+    if ( procs[mu]>1 ) {
+      dwfa.local_comm[mu] = 0;
+    } else { 
+      dwfa.local_comm[mu] = 1;
+    }
+  }
+  QDPIO::cout << "\nLocal comm = ";
+  for(int mu=0;mu<4;mu++){
+    QDPIO::cout << dwfa.local_comm[mu] << " ";
+  }
+  QDPIO::cout << endl; 
+  
+  multi1d<int> ncoor = QDP::Layout::nodeCoord();
+
+  dwf.init(dwfa);
+
+
+  
+ Seed seed;
+ QDP::RNG::savern(seed);
+ QDPIO::cout<<"HADRON: seed declare "<< seed <<endl;
+ QDP::RNG::setrn(seed);
+
+  /********************************************************
+   * Gaussian gauge field
+   ********************************************************
+   */
+
+  multi1d<LatticeColorMatrix>  u(Nd);
+  for(int i=0;i<Nd; i++){
+   u[i] = 1.0; 
+  }
+  HotSt(u);
+  if(argc == 11) {ArchivGauge_t Header ; readArchiv(Header,u,argv[10]);}
+
+  /********************************************************
+   * Anti-Periodic Boundary conditions
+   ********************************************************
+   */
+
+    /*multi1d<int> bcond (Nd);
+    bcond[0] = bcond[1] = bcond[2] = 1; bcond[3] = -1;
+    Handle<FermBC<T,U,U> > fbc (new SimpleFermBC<T,U,U>(bcond));
+    fbc->modify(u);*/
+    dwf.importGauge(u);
+
+   /********************************************************
+   * Gaussian source and result vectors
+   ********************************************************
+   */
+  multi1d<LatticeFermion> psi(Ls);
+  multi1d<LatticeFermion> chi(Ls);
+  multi1d<LatticeFermion> chi_deflated(Ls);
+
+  for(int s=0;s<Ls;s++) gaussian(psi[s]);
+  for(int s=0;s<Ls;s++) gaussian(chi[s]);
+  for(int s=0;s<Ls;s++) gaussian(chi_deflated[s]);
+
+
+
+  /********************************************************
+   * Bagel internal single checkerboard vectors
+   ********************************************************
+   */
+   Fermion_t psi_h[2];
+   psi_h[0] = dwf.allocFermion();
+   psi_h[1] = dwf.allocFermion();
+   Fermion_t chi_h[2];
+   chi_h[0] = dwf.allocFermion();
+   chi_h[1] = dwf.allocFermion();
+
+
+  ///Import this checkerboard of source field to bagel
+  Printf("Importing psi field cb %d\n",1);
+  dwf.importFermion(psi,psi_h[0],0);
+  dwf.importFermion(psi,psi_h[1],1);
+ 
+  /// Fill the other checkerboard of result with noise
+  for(int s=0;s<Ls;s++) gaussian(chi[s]);
+  for(int s=0;s<Ls;s++) chi_deflated[s] = chi[s];
+  dwf.importFermion(chi,chi_h[0],0);
+  dwf.importFermion(chi,chi_h[1],1);
+
+  /********************************************************
+   * Undeflated solve
+   ********************************************************
+   */
+  dwf.CGNE(chi_h,psi_h);
+
+  dwf.exportFermion(chi,chi_h[0],0);
+  dwf.exportFermion(chi,chi_h[1],1);
+
+QDPIO::cout << "hello there" << endl;
+  /********************************************************
+   * EigenCalculation: Calculate K eigenvectors
+   ********************************************************
+   */
+   int K = atoi(argv[6]);
+   int M = K + 20;
+   int Tn = atoi(argv[7]);
+
+   multi1d<multi1d<LatticeFermion> > Eigs(0); 
+   multi1d<Complex> vals(0);
+   
+	QDPIO::cout << "Set up Lanczos 5d..." << endl;
+  	Lanczos_5d<double> eig(dwf);		///Constructor
+	///Eigensolver parameters	
+	eig.u = u;				///Read gauge field
+	eig.M = M;				///Nsearch > Nwanted
+	eig.K = K;				///Nwanted
+	eig.conv = 1e-8;			///allowed residual
+	eig.D = DDAGD;	 			///Type of multiplication;
+	eig.Tn = Tn;				///Order of Chebyshev
+	eig.ch_off = atof(argv[8]);		///> max wanted eigenvalue of G5D 
+	eig.ch_rad = atof(argv[9]);		///> spectral radius of G5D 
+	eig.sh = false; eig.ch_shift = 0.0;	///shift to get internal eigenvalues
+	eig.prec = 1;				///0 = Ddwf, 1 = D_oo
+	QDPIO::cout << "Call eigensolver..." << endl;
+	eig.Run();
+	
+
+  /********************************************************
+   * Deflate with calculated evecs
+   ********************************************************
+   */
+
+  	dwf.importFermion(psi,psi_h[0],0);
+  	dwf.importFermion(psi,psi_h[1],1);
+  	dwf.importFermion(chi_deflated,chi_h[0],0);
+  	dwf.importFermion(chi_deflated,chi_h[1],1);
+
+  	dwf.CGNE(chi_h,psi_h,eig.bq,eig.bl);
+
+  	dwf.exportFermion(chi_deflated,chi_h[0],0);
+  	dwf.exportFermion(chi_deflated,chi_h[1],1);
+
+	Real diff = 0.0;
+	for(int s=0;s<Ls;s++) { diff = norm2(chi[s] - chi_deflated[s]); }
+	QDPIO::cout << "|chi - chi_deflated| = " << sqrt(diff) << endl;
+	Printf("Done\n");
+
+
+
+}
+
+
+
+
+
+
+
+

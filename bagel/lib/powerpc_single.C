@@ -1,0 +1,484 @@
+/*
+ *
+ *  Copyright Peter Boyle and Glasgow University, 2000.
+ *
+ *  It is provided under the GNU pubic License V2
+ *  It is provided as is and is not guaranteed fit for any purpose.
+ *
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include "processor.h"
+#include "powerpc.h"
+
+
+struct processor *create_ppc440s ()
+{
+  struct regs *iregs=new regs;
+  struct regs *fregs=new regs;
+  struct processor *proc = new processor;
+  struct pipeline *pipes = new pipeline[3];
+  struct instructionset *iset = new instructionset;
+
+  int i;
+
+  iregs->regfile=32;
+  fregs->regfile=32;
+  iregs->fmt="%%r%d";
+  fregs->fmt="%d";
+  for(i=0;i<32;i++){
+    iregs->allocated[i] = 0;
+    fregs->allocated[i] = 0;
+    iregs->mnemonic[i] = NULL;
+    fregs->mnemonic[i] = NULL;
+  }
+
+  proc->iregs = iregs;
+  proc->fregs = fregs;
+  proc->pipes = pipes;
+  proc->iset = iset;
+  proc->FP_size = 4;
+  proc->FSP_size = 4;
+  proc->I_size = 4;
+  proc->usenops = 0;
+  proc->delayslot = 0;
+  proc->RegWindows = 0;
+  proc->Bias = 0;
+
+   /*{... ABI definition ...*/
+  proc->ABI_argbase = 3;
+    /*Allocate dedicated registers*/
+  iregs->allocated[0] = 1; /*Don't use GPR 0 since it can have anomolous behaviour*/
+                           /* when used in an effective address if used by accident*/
+  iregs->allocated[1] = 1;
+  iregs->allocated[2] = 1;
+  proc->StackPointer = 1 ;
+  iregs->mnemonic[0] = "GPR0";
+  iregs->mnemonic[1] = "SP";
+  iregs->mnemonic[2] = "GPR2";
+  proc->ReturnPointer =-1; /*Return is in the link register, not a GPR*/
+
+    /*ABI defines a number of callee save registers*/
+  proc->Isave=0;
+  for ( i=14; i<=31 ; i ++){
+    proc->Isave= proc->Isave | (1<<i);
+  }
+  proc->Fsave=0;
+  for ( i=14; i<=31 ; i ++){
+    proc->Fsave= proc->Fsave | (1<<i);
+  }
+  /*...END ABI}*/
+
+
+  proc->CacheLine = 32; /*32 byte cache line*/
+
+  /*Actually issue width is 2, but just pretend*/
+  proc->npipes=2;
+  for(i=0;i<N_PIPE_TYPES;i++){
+    proc->switchargs[i] = 0; /*Wrote this with PPC in mind so arg order is always native*/
+  }
+
+  pipes[0].issuegroups = FADDMASK | FMULMASK | FMACMASK |FMOVMASK | IALUMASK;
+  pipes[1].issuegroups = IALUMASK | BRCHMASK | LOADMASK |
+                         STORMASK | FLODMASK | CACHMASK | FSTRMASK;
+
+  proc->latency[FMACPIPE] = 5;
+  proc->latency[FADDPIPE] = 5;
+  proc->latency[FMULPIPE] = 5;
+  proc->latency[FMOVPIPE] = 3;
+  proc->latency[FLODPIPE] = 7;
+  proc->latency[FSTRPIPE] = 1;
+  proc->latency[IALUPIPE] = 1;
+  proc->latency[LOADPIPE] = 2;
+  proc->latency[STORPIPE] = 1;
+
+  set_scheduler_weird();
+
+  create_ppc440s_instructions(proc);
+  return(proc);
+}
+
+void create_ppc440s_instructions( struct processor *proc)
+{
+  int i,j;
+
+  struct instruction *fmacs = new instruction [nfmacs];
+  struct instruction *fadds = new instruction [nfadds];
+  struct instruction *fmuls = new instruction [nfmuls];
+  struct instruction *fmovs = new instruction [nfmovs];
+  struct instruction *fsaves= new instruction [nfsaves];
+  struct instruction *loads = new instruction [nloads];
+  struct instruction *floads= new instruction [nfloads];
+  struct instruction *cache = new instruction [ncache];
+  struct instruction *adds  = new instruction [nadds];
+  struct instruction *branch = new instruction [nbrch];
+  struct instruction *directive= new instruction [ndirective];
+  struct instruction *stores = new instruction [nstore];
+  struct instruction *weird  = new instruction [nweirdops];
+
+  /*Define the FMACS*/
+  fmacs[FMADD].mnemonic = "fmadds ";
+  fmacs[FMSUB].mnemonic = "fmsubs ";
+  fmacs[FNMADD].mnemonic ="fnmadds";
+  fmacs[FNMSUB].mnemonic ="fnmsubs";
+  for (i=0;i<nfmacs;i++){
+    fmacs[i].narg  = 4;
+    for(j=0;j<fmacs[i].narg;j++){
+      fmacs[i].argtypes[j] = Fregs;
+      fmacs[i].inout[j] = inarg;
+    }
+    fmacs[i].inout[0] = outarg;
+    fmacs[i].pipe  = FMACPIPE;
+    fmacs[i].code = i;
+  }
+
+  /*Define the FADDS*/
+  fadds[FADD].mnemonic = "fadds  ";
+  fadds[FSUB].mnemonic = "fsubs  ";
+  for (i=0;i<nfadds;i++){
+    fadds[i].narg = 3;
+    for(j=0;j<fadds[i].narg;j++){
+      fadds[i].argtypes[j] = Fregs;
+      fadds[i].inout[j] = inarg;
+    }
+    fadds[i].inout[0] = outarg;
+    fadds[i].pipe  = FADDPIPE;
+    fadds[i].code = i;
+  }
+
+  /*Define the FMOV*/
+  fmovs[FMOV].mnemonic = "fmr  ";
+  fmovs[FNEG].mnemonic = "fneg  ";
+  for (i=0;i<nfmovs;i++){
+    fmovs[i].narg = 2;
+    for(j=0;j<fmovs[i].narg;j++){
+      fmovs[i].argtypes[j] = Fregs;
+      fmovs[i].inout[j] = inarg;
+    }
+    fmovs[i].inout[0] = outarg;
+    fmovs[i].pipe  = FMOVPIPE;
+    fmovs[i].code = i;
+  }
+
+  /*Define FMUL*/
+  fmuls[FMUL].mnemonic = "fmuls  ";
+  fmuls[FMUL].narg  = 3 ;
+  for(j=0;j<fmuls[FMUL].narg;j++){
+    fmuls[FMUL].argtypes[j] = Fregs;
+    fmuls[FMUL].inout[j] = inarg;
+  }
+  fmuls[FMUL].inout[0] = outarg;
+  fmuls[FMUL].pipe  = FMULPIPE;
+  fmuls[FMUL].code = FMUL;
+
+
+  /*Define loads*/
+  loads[ILD_EA].mnemonic = "lwz  ";
+  loads[LOAD_REG_EA].mnemonic = "lwz  ";
+  loads[LOAD_ADDR].mnemonic = "la  ";
+  loads[LOAD_IMM].mnemonic = "li  ";
+  for (i=0;i<nloads;i++){
+    loads[i].narg = 3;
+    loads[i].argtypes[0] = Iregs;
+    loads[i].argtypes[1] = SIMM;
+    loads[i].argtypes[2] = Iregs;
+    loads[i].inout[0] = outarg;
+    loads[i].inout[1] = inarg;
+    loads[i].inout[2] = inarg;
+    loads[i].pipe  = LOADPIPE;
+    loads[i].code  = i;
+  }
+  loads[LOAD_IMM].narg = 2;
+
+  /*Define STORE - really the register save and restore*/
+  /*Since these must be full register width we abstract them*/
+  /* differently from the floating and integer which can be a lower precision*/
+  stores[SAVE_REG_EA].mnemonic = "stw  ";
+  stores[IST_EA].mnemonic = "stw  ";
+  for (i=0;i<nstore;i++){
+    stores[i].narg = 3;
+    stores[i].argtypes[0] = Iregs;
+    stores[i].argtypes[1] = SIMM;
+    stores[i].argtypes[2] = Iregs;
+    stores[i].inout[0] = inarg;
+    stores[i].inout[1] = inarg;
+    stores[i].inout[2] = inarg;
+    stores[i].pipe  = STORPIPE;
+    stores[i].code  = i;
+  }
+
+  /*Define cache control codes*/
+  cache[PREF_IMM].mnemonic = "dcbt "; /*Pre-fetch*/
+  cache[WRITE_HINT].mnemonic = "dcbt %r0,";
+  cache[FLUSH].mnemonic = "dcbf %r0,";
+  cache[COUNTER_HINT].mnemonic = "mtctr ";
+  for (i=0;i<ncache;i++){
+    cache[i].narg = 1;
+    cache[i].argtypes[0] = Iregs;
+    cache[i].inout[0]  = inarg;
+    cache[i].pipe  = CACHPIPE;
+    cache[i].code  = i;
+  }
+  cache[PREF_IMM].narg = 2;
+  cache[PREF_IMM].argtypes[0] = Iregs;
+  cache[PREF_IMM].argtypes[1] = Iregs;
+  cache[PREF_IMM].inout[1] = inarg;
+  cache[FLUSH].narg = 1;
+  cache[FLUSH].argtypes[0] = Iregs;
+  cache[FLUSH].argtypes[1] = Iregs;
+  cache[FLUSH].inout[1] = inarg;
+  cache[WRITE_HINT].narg = 2;
+  cache[WRITE_HINT].argtypes[0] = Iregs;
+  cache[WRITE_HINT].argtypes[1] = Iregs;
+  cache[WRITE_HINT].inout[1] = inarg;
+
+  /*Floating point loads - does the APU interrupt the FPU arithmetic stream*/
+  floads[FLOAD_EA].mnemonic = "lfs  "  ;
+  floads[FLOAD_REG_EA].mnemonic = "lfs  " ;
+  floads[FSLOAD_EA].mnemonic = "lfs  "  ;
+  for (i=0;i<nfloads;i++){
+    floads[i].narg = 3;
+    floads[i].argtypes[0] = Fregs;
+    floads[i].argtypes[1] = SIMM;
+    floads[i].argtypes[2] = Iregs;
+
+    floads[i].inout[0]  = outarg;
+    floads[i].inout[1]  = inarg;
+    floads[i].inout[2]  = inarg;
+
+    floads[i].pipe  = FLODPIPE;
+    floads[i].code  = i;
+  }
+
+  fsaves[FSAVE_EA].mnemonic = "stfs " ;
+  fsaves[FSAVE_REG_EA].mnemonic = "stfs " ;
+  fsaves[FSSAVE_EA].mnemonic = "stfs " ;
+  for (i=0;i<nfsaves;i++){
+    fsaves[i].narg = 3;
+    fsaves[i].argtypes[0] = Fregs;
+    fsaves[i].argtypes[1] = SIMM;
+    fsaves[i].argtypes[2] = Iregs;
+
+    fsaves[i].inout[0]  = inarg;
+    fsaves[i].inout[1]  = inarg;
+    fsaves[i].inout[2]  = inarg;
+
+    fsaves[i].pipe  = FSTRPIPE;
+    fsaves[i].code  = i;
+  }
+
+
+  /*Integer arithmetic pipe - Should only need add and subtract */
+  /* Both with and without recording */
+  adds[IADD].mnemonic = "add  "  ;
+  adds[ISUB].mnemonic = "sub  "  ;
+  adds[IOR].mnemonic  = "or   "  ;
+  adds[CMOVGE].mnemonic = (char *)NULL;
+  adds[CMOVGT].mnemonic = (char *)NULL;
+  adds[CMOVLE].mnemonic = (char *)NULL;
+  adds[CMOVLT].mnemonic = (char *)NULL;
+  adds[ISUB_PREDICATE].mnemonic = "sub. ";
+  adds[IOR_PREDICATE].mnemonic = "or. ";
+  adds[IMUL].mnemonic = "mullw ";
+  adds[IMUL_IMM].mnemonic = "mulli ";
+  adds[IADD_IMM].mnemonic = "addi. ";
+  adds[IAND_IMM].mnemonic = "andi ";
+  for (i=0;i<nadds;i++){
+    adds[i].narg = 3;
+    for(j=0;j<adds[i].narg;j++){
+      adds[i].argtypes[j]= Iregs;
+      adds[i].inout[j]=inarg;
+    }
+    adds[i].inout[0] = outarg;
+    adds[i].pipe  = IALUPIPE;
+    adds[i].code  = i;
+  }
+
+  /*Multiply immediate is a special case of IALU OPS*/
+  adds[IMUL_IMM].argtypes[2] = SIMM;
+  adds[IADD_IMM].argtypes[2] = SIMM;
+  adds[IAND_IMM].argtypes[2] = SIMM;
+
+  /*Branch instructions*/
+  branch[BRANCH_GT].mnemonic = "bt gt, ";
+  branch[BRANCH_EQ].mnemonic = "bt eq, ";
+  branch[BRANCH_LT].mnemonic = "bt lt, ";
+  branch[BRANCH].mnemonic    = "b      ";
+  branch[BRANCH_GE].mnemonic = "bf lt, ";
+  branch[BRANCH_LE].mnemonic = "bf gt, ";
+  branch[BRANCH_CTR].mnemonic= "bdnz   ";
+  branch[BRANCH_RET].mnemonic= "blr    ";
+  for (i=0;i<nbrch;i++){
+    branch[i].narg = 1;
+    branch[i].argtypes[0] = Label;
+    branch[i].inout[0]  = inarg;
+    branch[i].pipe  = BRCHPIPE;
+    branch[i].code  = i;
+  }
+  /*Assembler directives*/
+  directive[Target].mnemonic = "";
+  directive[CmovTarget].mnemonic = "";
+  directive[Cache_Align].mnemonic = "";
+  directive[Enter_Routine].mnemonic = "";
+  directive[Exit_Routine].mnemonic = "";
+  directive[Pipe_Flush].mnemonic = "";
+  directive[NOP].mnemonic = "nop  ";
+  directive[FNOP].mnemonic = "fnop ";
+  directive[LS_BARRIER].mnemonic="";
+
+  for (i=0;i<ndirective;i++){
+    directive[i].narg = 1;
+    directive[i].argtypes[0] = Label;
+    directive[i].pipe  = DIRECTIVE;
+    directive[i].code  = i;
+  }
+
+  weird[WARSTALL].mnemonic = "Write after read";
+  weird[LSPIPESPARSE].mnemonic = "L/S pipe busy";
+  weird[CACHESTALL].mnemonic = "Stalled by Cache unit";
+  for (i=0;i<nweirdops;i++){
+    weird[i].narg = 0;
+    weird[i].argtypes[0] = Iregs;
+    weird[i].argtypes[1] = Iregs;
+    weird[i].pipe  = WEIRDRULES;
+    weird[i].code  = i;
+  }
+
+
+  /*Now set these up as the instruction set*/
+  proc->iset->instructions[FMACPIPE] = fmacs;
+  proc->iset->instructions[FADDPIPE] = fadds;
+  proc->iset->instructions[FMULPIPE] = fmuls;
+  proc->iset->instructions[CACHPIPE] = cache;
+  proc->iset->instructions[IALUPIPE] = adds;
+  proc->iset->instructions[LOADPIPE] = loads;
+  proc->iset->instructions[FLODPIPE] = floads;
+  proc->iset->instructions[FSTRPIPE] = fsaves;
+  proc->iset->instructions[BRCHPIPE] = branch;
+  proc->iset->instructions[DIRECTIVE] = directive;
+  proc->iset->instructions[STORPIPE] = stores;
+  proc->iset->instructions[FMOVPIPE] = fmovs;
+  proc->iset->instructions[WEIRDRULES] = weird;
+
+}
+
+/*THE FOLLOWING THREE ROUTINES ARE POWER PC SPECIFIC */
+static int Hdecrement;
+static int innermost;
+
+int start_loop_ppc440s(int counter)
+{
+  int lab = get_target_label();
+  Hdecrement = def_offset(-1,Byte,"minus1");
+  innermost = 1;
+  /*mtctr the register associated with counter*/
+  make_inst(CACHPIPE,COUNTER_HINT,counter);
+  make_inst(BRCHPIPE,BRANCH,lab);
+  make_inst(DIRECTIVE,Cache_Align,lab);
+  make_inst(DIRECTIVE,Target,lab);
+  return(lab);
+
+}
+void stop_loop_ppc440s(int branchno,int counter)
+{
+
+  /* Use the auto decrementing branch if possible */
+  queue_load_addr(counter,Hdecrement,counter);
+
+  if ( innermost ) {
+    make_inst(BRCHPIPE,BRANCH_CTR,branchno);
+    innermost = 0;
+  }
+  else {
+    queue_barrier();
+    make_inst(IALUPIPE,IOR_PREDICATE,counter,counter,counter); /*Sets the predicate reg*/
+    make_inst(BRCHPIPE,BRANCH_GT,branchno);
+  }
+  return;
+}
+void check_iterations_ppc440s(int cntreg,int retno)
+{
+  make_inst(IALUPIPE,IOR_PREDICATE,cntreg,cntreg,cntreg); /*Sets the predicate reg*/
+  make_inst(BRCHPIPE,BRANCH_LE,retno);                    /*Branch if cntreg <= 0*/
+}
+/* ...} */
+
+void directive_print_ppc440s(struct instruction *i)
+{
+    switch ( i->code ) {
+    case Target:
+      printf("%s:\n",make_label(i->args[0]));
+      break;
+    case CmovTarget:
+      printf("%s:\n",make_label(i->args[0]));
+      break;
+    case Cache_Align:
+      printf(".align 4\n");
+      break;
+    case Enter_Routine:
+      printf(".text\n.align 3\n");
+      printf(".globl %s\n",i->mnemonic);
+      printf("%s:\n\n",i->mnemonic);
+      /*      printf(".set noreorder\n\n");*/
+      break;
+    case Exit_Routine:
+      printf("\tblr\n");
+      /*      printf(".size %s\n",i->mnemonic);*/
+      break;
+    case Pipe_Flush:
+      printf("# Instruction order barrier inserted\n");
+      break;
+    case NOP:
+      printf("  nop\n");
+      break;
+    case FNOP:
+      printf("  fnop\n");
+      break;
+    default:
+      printf("Error: Unknown assembler directive requested\n");
+      exit(0);
+      break;
+    }
+}
+
+void queue_cmovge_ppc440s(int cond,int src,int dst)
+{
+  int skipto = get_target_label();
+
+  make_inst(IALUPIPE,IOR_PREDICATE,cond,cond,cond); /*Sets the predicate reg*/
+  make_inst(BRCHPIPE,BRANCH_LT,skipto);                    /*Branch if cntreg <= 0*/
+  make_inst(IALUPIPE,IOR,dst,src,src);
+  make_inst(DIRECTIVE,CmovTarget,skipto);
+}
+
+
+void cache_print_ppc440s(struct instruction *i)
+{
+
+  switch(i->code){
+  case FLUSH:
+  case WRITE_HINT:
+  case PREF_IMM:
+      printf("\t%s\t",i->mnemonic);
+      arg_print(i,0);
+      printf(",");
+      arg_print(i,1);
+      printf("\n");
+      break;
+  case COUNTER_HINT:
+      printf("\t%s\t",i->mnemonic);
+      arg_print(i,0);
+      printf("\n");
+      break;
+  default:
+      printf("Error: Unknown cache hint requested\n");
+      exit(0);
+      break;
+  }
+  return;
+}
+
+
+

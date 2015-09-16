@@ -1,0 +1,553 @@
+#include <chroma.h>
+ 
+typedef double Float;
+ 
+//#define Printf if ( QMP_is_primary_node() ) printf
+#define Printf printf
+ 
+#include <bfm.h>
+#include <bfm_qdp.h>
+#include <bfm_qdp_wilson.h>
+
+/*Peter Boyle Oct 2005 */
+//begin mod karthee-clover
+typedef LatticeFermion T;
+typedef multi1d<LatticeColorMatrix> Q;
+typedef multi1d<LatticeColorMatrix> P;
+//end mod karthee-clover
+ 
+typedef LatticeFermion T;
+typedef multi1d<LatticeColorMatrix> U;
+typedef bfm bfm_t;
+ 
+using namespace Chroma;
+void compare_result (LatticeFermion A, LatticeFermion B, bfm_t & clov);
+ 
+void      testFermion  (LatticeFermion &psi,  bfm_t   & clov)
+{
+    multi1d<int> x(4);
+ 
+    int Nspinco=12;
+    Float *Psi_p = (Float *) &psi.elem(0).elem(0).elem(0).real();
+ 
+    cout << "testFermion : Checking I get the CHROMA array ordering correct by comparing to peekSite\n";
+ 
+    for ( x[3]=0; x[3]<clov.node_latt[3]; x[3]++ )
+    {
+        for ( x[2]=0; x[2]<clov.node_latt[2]; x[2]++ )
+        {
+            for ( x[1]=0; x[1]<clov.node_latt[1]; x[1]++ )
+            {
+                for ( x[0]=0; x[0]<clov.node_latt[0]; x[0]++ )
+                {
+                    int xx[4];
+                    xx[0]=x[0];
+                    xx[1]=x[1];
+                    xx[2]=x[2];
+                    xx[3]=x[3];
+ 
+                    int print = 1;
+ 
+                    /*for ( int co=0; co<3; co++ )
+                    {
+                        for ( int sp=0; sp<4; sp++ )
+                        {
+ 
+                            int spco = co+3*sp;
+ 
+                            int reim=0;
+                            int cidx = clov.chroma_idx(xx,reim,spco,Nspinco);
+                            Fermion ferm = peekSite(psi,x);
+                            ColorVector cv = peekSpin(ferm,sp);
+                            Complex cp = peekColor(cv,co);
+                            if ( Psi_p[cidx] != toDouble(real(cp) ) )
+                            {
+                                print = 1;
+                            }
+ 
+                            reim=1;
+                            cidx = clov.chroma_idx(xx,reim,spco,Nspinco);
+                            ferm = peekSite(psi,x);
+                            cv = peekSpin(ferm,sp);
+                            cp = peekColor(cv,co);
+                            if ( Psi_p[cidx] != toDouble(imag(cp) ) )
+                            {
+ 
+                                print = 1;
+ 
+                            }
+ 
+                        }
+                    }*/
+ 
+                    if ( print )
+                        cout <<x[0]<<" "<<x[1]<<" "<<x[2]<<" "<<x[3]<< endl;
+ 
+                    for ( int co=0; co<3; co++ )
+                    {
+                        for ( int sp=0; sp<4; sp++ )
+                        {
+ 
+                            int spco = 4*co+sp;
+ 
+                            int reim=0;
+                            int cidx = clov.chroma_idx(xx,reim,spco,Nspinco);
+                            Fermion ferm = peekSite(psi,x);
+                            ColorVector cv = peekSpin(ferm,sp);
+                            Complex cp = peekColor(cv,co);
+                            if ( print )
+                            {
+                                cout << "("<<Psi_p[cidx] << "," <<Psi_p[cidx+1] << ") " <<endl;
+                            }
+ 
+                        }
+                    }
+ 
+                }
+            }
+        }
+    }
+ 
+}
+ 
+int main (int argc,char **argv )
+{
+    Chroma::initialize(&argc,&argv);
+ 
+    if ( argc != 5 )
+    {
+        Printf("Usage: %s lx ly lz lt \n All must be even\n",argv[0]);
+        Printf("argc is %d\n",argc);
+        for ( int i=0; i<argc; i++)
+            Printf("%d %s\n",i,argv[i]);
+        exit(-1);
+    }
+ 
+ 
+    /********************************************************
+     * Setup QDP
+     ********************************************************
+     */
+    multi1d<int> nrow(Nd);
+    nrow[0] = atoi(argv[1]);
+    nrow[1] = atoi(argv[2]);
+    nrow[2] = atoi(argv[3]);
+    nrow[3] = atoi(argv[4]);
+ 
+    Layout::setLattSize(nrow);
+    Layout::create();
+ 
+    int lx = QDP::Layout::subgridLattSize()[0];
+    int ly = QDP::Layout::subgridLattSize()[1];
+    int lz = QDP::Layout::subgridLattSize()[2];
+    int lt = QDP::Layout::subgridLattSize()[3];
+ 
+    /********************************************************
+     * Setup clov operator
+     ********************************************************
+     */
+    bfmarg clova;
+    bfm_t  clov;
+    clova.solver = CloverFermion;
+    clova.node_latt[0]  = lx;
+    clova.node_latt[1]  = ly;
+    clova.node_latt[2]  = lz;
+    clova.node_latt[3]  = lt;
+ 
+    multi1d<int> procs = QDP::Layout::logicalSize();
+    Printf("%d dim machine\n\t", procs.size());
+    for(int mu=0; mu<4; mu++)
+    {
+        if ( procs[mu]>1 )
+        {
+            clova.local_comm[mu] = 0;
+        }
+        else
+        {
+            clova.local_comm[mu] = 1;
+        }
+    }
+ 
+    // Make up a random gauge field.
+    multi1d<LatticeColorMatrix> u(Nd);
+    HotSt(u);
+ 
+    // Make up a gaussian source and a zero result vector
+    LatticeFermion psi;
+    gaussian(psi);
+ 
+ 
+    LatticeFermion chi;
+    chi = zero;
+ 
+    clova.Ls = 1;
+    clova.mass = 0.0;
+    clova.Csw = 0.0;
+ 
+    Printf("Initialising bfm operator\n");
+    clov.init(clova);
+ 
+    Printf("bfm operator using vector length %d\n",clov.simd());
+    Fermion_t psi_h[2];
+    psi_h[0] = clov.allocFermion();
+    psi_h[1] = clov.allocFermion();
+    Fermion_t chi_h[2]; 
+    chi_h[0] = clov.allocFermion();
+    chi_h[1] = clov.allocFermion();
+
+    Printf("Testing Input Fermion\n");
+    testFermion(psi,clov);
+    
+    Float *psi_p = (Float *) &psi.elem(0).elem(0).elem(0).real();     
+    Float *chi_p = (Float *) &chi.elem(0).elem(0).elem(0).real();
+        
+    clov.importFermion(psi_p,psi_h[0],0);
+    clov.importFermion(psi_p,psi_h[1],1);
+    //clov.importFermion(chi_p,chi_h[0],0);
+    //clov.importFermion(chi_p,chi_h[1],1);
+ 
+    clov.importGauge(u);
+
+    // Check if the gauge field configuration is unitarized
+    unitarityCheck(u);
+
+    // Need a ferm state 
+    Handle< FermState<T,P,Q> > fs(new PeriodicFermState<T,P,Q>(u));
+
+    // Need some clover params 
+    CloverFermActParams params;
+    params.clovCoeffR = Real(1.92);
+    params.clovCoeffT = Real(0.57);
+    params.Mass=Real(0);
+
+    // Need a clover operator - reference
+    QDPCloverTerm qdp_clov , qdp_invclov;
+    qdp_clov.create(fs, params);
+
+    qdp_invclov.create(fs,params,qdp_clov);  // make a copy
+    qdp_invclov.choles(0);                   // invert the cb=0 part
+    qdp_invclov.choles(1);                   // invert the cb=1 part*/
+
+    /*for(int site=0;site<256;site++)
+    {
+      QDPIO::cout<< "site : " << site << endl;
+      struct Chroma::PrimitiveClovTriang clovtri = qdp_invclov.getClovTriang(site);      
+
+      for(int jj = 0; jj < 2; jj++)
+	   {
+         for(int ii = 0; ii < 2*Nc; ii++)
+         {
+             QDPIO::cout<< clovtri.diag[jj][ii].elem() <<endl;
+         }
+         QDPIO::cout<<endl;
+         for(int ii = 0; ii < 2*Nc*Nc-Nc; ii++)
+         {
+             QDPIO::cout<< clovtri.offd[jj][ii].real() << " +i " <<clovtri.offd[jj][ii].imag() <<endl;
+         }         
+         QDPIO::cout<<endl;
+      } 
+      QDPIO::cout<<endl;
+    }*/
+
+    qdp_clov.apply(chi,psi,1,0);
+    qdp_clov.apply(chi,psi,1,1);
+    Printf("Testing Output Fermion\n");
+    testFermion(chi,clov);
+        
+    clov.importClover(qdp_clov,qdp_invclov);
+
+    clov.applyClover(chi_h[0],psi_h[0],0,0);
+    clov.applyClover(chi_h[1],psi_h[1],1,0);    
+
+    LatticeFermion bfm_chi = zero;
+    Float *chi_bp = (Float *) &bfm_chi.elem(0).elem(0).elem(0).real();
+    clov.exportFermion(chi_bp,chi_h[0],0);
+    clov.exportFermion(chi_bp,chi_h[1],1);      
+    
+    Printf("Testing bfm Output Fermion\n");
+    testFermion(bfm_chi,clov);
+
+    Double n2 = norm2(bfm_chi-chi);
+    cout << "|| Bagel - QDP || = "<< n2 << endl;
+ 
+    n2 = norm2(bfm_chi);
+    cout << "|| Bagel || = "<< n2 << endl;
+    n2 = norm2(chi);
+    cout << "|| QDP || = "<< n2 << endl;
+
+    compare_result(chi,bfm_chi,clov);    
+
+    /*qdp_invclov.apply(chi,psi,1,0);
+    qdp_invclov.apply(chi,psi,1,1);
+    Printf("Testing Output Fermion\n");
+    testFermion(chi,clov);
+        
+    clov.importClover(qdp_clov,qdp_invclov);
+
+    clov.applyClover(chi_h[0],psi_h[0],0,1);
+    clov.applyClover(chi_h[1],psi_h[1],1,1);    
+
+    printf("Export fermion\n");      
+    
+    LatticeFermion bfm_chi = zero;
+    Float *chi_bp = (Float *) &bfm_chi.elem(0).elem(0).elem(0).real();
+    clov.exportFermion(chi_bp,chi_h[0],0);
+    clov.exportFermion(chi_bp,chi_h[1],1);      
+    
+    Printf("Testing bfm Output Fermion\n");
+    testFermion(bfm_chi,clov);
+
+    Double n2 = norm2(bfm_chi-chi);
+    cout << "|| Bagel - QDP || = "<< n2 << endl;
+ 
+    n2 = norm2(bfm_chi);
+    cout << "|| Bagel || = "<< n2 << endl;
+    n2 = norm2(chi);
+    cout << "|| QDP || = "<< n2 << endl;
+
+    compare_result(chi,bfm_chi,clov);   */
+
+    QDPIO::cout<<"Test complete endl"<<endl;    
+
+    //end mod karthee-clover
+ 
+    /*testFermion  (psi,clov);
+ 
+    // Naive Dslash
+#ifdef CHROMA_3
+    multi1d<int> bcs(Nd);
+    bcs[0] = bcs[1] = bcs[2] = bcs[3] = 1;
+    Handle<FermBC<T,U,U> > fbc(new SimpleFermBC< T, U, U >(bcs));
+    Handle<CreateFermState<T,U,U> > cfs( new CreateSimpleFermState<T,U,U>(fbc));
+    Handle<FermState<T,U,U> > fs ((*cfs)(u));
+    QDPWilsonDslash D(fs);
+#else
+    QDPWilsonDslash D(u);
+#endif
+    LatticeFermion chi_qdp;
+    LatticeFermion noise;
+    gaussian(noise);
+ 
+    // cb is cb of result, 1-cb is cb of input field
+    for(int cb=0; cb<2; cb++)
+    {
+ 
+        //Import this checkerboard of QDP fields to bagel
+        Printf("Importing psi field cb %d\n",cb);
+ 
+        // Fill the other checkerboard.
+        chi = zero;
+        chi_qdp = zero;
+ 
+        Float *psi_p = (Float *) &psi.elem(0).elem(0).elem(0).real();
+        Float *chi_p = (Float *) &chi.elem(0).elem(0).elem(0).real();
+        clov.importFermion(psi_p,psi_h,1-cb);
+ 
+        for(int dag=0; dag<2; dag++)
+        {
+ 
+            Printf("Checking cb=%d dag=%d\n",cb,dag);
+ 
+            clov.dslash(psi_h,
+                       chi_h,
+                       cb,dag);
+ 
+            clov.exportFermion(chi_p,chi_h,cb);
+ 
+            // Check the result
+            PlusMinus pm;
+            if ( dag ) pm = MINUS;
+            else pm = PLUS;
+ 
+#undef DEBUG
+#ifdef DEBUG
+            LatticeFermion tmp;
+ 
+            {
+                cout << "U[mu]"<<endl;
+                int c1,c2,mu;
+                for(mu=0; mu<4; mu++)
+                {
+                    for(c1=0; c1<3; c1++)
+                    {
+                        for(c2=0; c2<3; c2++)
+                        {
+                            cout << peekColor(u[mu].elem(0),c1,c2) ;
+                        }
+                        cout << endl;
+                    }
+                    cout << endl;
+                }
+                cout << "Udag[mu]"<<endl;
+                for(mu=0; mu<4; mu++)
+                {
+                    LatticeColorMatrix udag = adj(shift(u[mu],BACKWARD,mu));
+                    for(c1=0; c1<3; c1++)
+                    {
+                        for(c2=0; c2<3; c2++)
+                        {
+                            cout << peekColor(udag.elem(0),c1,c2) ;
+                        }
+                        cout << endl;
+                    }
+                    cout << endl;
+                }
+            }
+ 
+            LatticeFermion fm;
+            fm = zero;
+            tmp = spinReconstructDir0Minus(u[0] * shift(spinProjectDir0Minus(psi), FORWARD, 0));
+            cout << "Uchip0"<<endl;
+            cout << tmp.elem(0) << endl;
+            fm.elem(0) = tmp.elem(0);
+            tmp = spinReconstructDir0Plus(shift(adj(u[0]) * spinProjectDir0Plus(psi), BACKWARD, 0));
+            cout << "Uchim0"<<endl;
+            cout << tmp.elem(0) << endl;
+            fm.elem(0) = fm.elem(0) +  tmp.elem(0);
+            cout << "Recon running sum "<<fm.elem(0) <<endl;
+ 
+            tmp = spinReconstructDir1Minus(u[1] * shift(spinProjectDir1Minus(psi), FORWARD, 1));
+            cout << "Uchip1"<<endl;
+            cout << tmp.elem(0) << endl;
+            fm.elem(0) = fm.elem(0) +  tmp.elem(0);
+ 
+            tmp = spinReconstructDir1Plus(shift(adj(u[1]) * spinProjectDir1Plus(psi), BACKWARD, 1));
+            cout << "Uchim1"<<endl;
+            cout << tmp.elem(0) << endl;
+            fm.elem(0) = fm.elem(0) +  tmp.elem(0);
+            cout << "Recon running sum "<<fm.elem(0) <<endl;
+ 
+            tmp = spinReconstructDir2Minus(u[2] * shift(spinProjectDir2Minus(psi), FORWARD, 2));
+            cout << "Uchip2"<<endl;
+            cout << tmp.elem(0) << endl;
+            fm.elem(0) = fm.elem(0) +  tmp.elem(0);
+ 
+            tmp = spinReconstructDir2Plus(shift(adj(u[2]) * spinProjectDir2Plus(psi), BACKWARD, 2));
+            cout << "Uchim2"<<endl;
+            cout << tmp.elem(0) << endl;
+            fm.elem(0) = fm.elem(0) +  tmp.elem(0);
+            cout << "Recon running sum "<<fm.elem(0) <<endl;
+ 
+ 
+            tmp = spinReconstructDir3Minus(u[3] * shift(spinProjectDir3Minus(psi), FORWARD, 3));
+            cout << "Uchip3"<<endl;
+            cout << tmp.elem(0) << endl;
+            fm.elem(0) = fm.elem(0) +  tmp.elem(0);
+ 
+            tmp = spinReconstructDir3Plus(shift(adj(u[3]) * spinProjectDir3Plus(psi), BACKWARD, 3));
+            cout << "Uchim3"<<endl;
+            cout << tmp.elem(0) << endl;
+            fm.elem(0) = fm.elem(0) +  tmp.elem(0);
+            cout << "Recon running sum "<<fm.elem(0) <<endl;
+ 
+ 
+            for(int mu=0; mu<4; mu++)
+            {
+                tmp = shift(psi, FORWARD, mu);
+                cout << "psi x+"<<mu<< endl;
+                cout << tmp.elem(0) << endl;
+            }
+            for(int mu=0; mu<4; mu++)
+            {
+                tmp = shift(psi, BACKWARD, mu);
+                cout << "psi x-"<<mu<< endl;
+                cout << tmp.elem(0) << endl;
+            }
+ 
+#endif
+ 
+ 
+            D.apply(chi_qdp, psi, pm, cb);
+ 
+#ifdef DEBUG
+            cout << "QDP gets"<< endl;
+            Float *chi_q = (Float *) &chi_qdp.elem(0).elem(0).elem(0).real();
+            FILE * fp = fopen("foo","w");
+            for(int s=0 ; s < lx*ly*lz*lt/2 ; s++ )
+            {
+                for(int i=0 ; i < 24 ; i++ )
+                {
+                    fprintf(fp,"%le %le\n",chi_p[i+24*s],chi_q[i+s*24]);
+                }
+                fprintf(fp,"\n");
+            }
+            cout << chi_qdp.elem(0) << endl;
+#endif
+ 
+            Double n2 = norm2(chi-chi_qdp);
+ 
+            cout << "|| Bagel - QDP || = "<< n2 << endl;
+ 
+            n2 = norm2(chi);
+            cout << "|| Bagel || = "<< n2 << endl;
+            n2 = norm2(chi_qdp);
+            cout << "|| QDP || = "<< n2 << endl;
+#ifdef DEBUG
+            compare_result(chi,chi_qdp,clov);
+#endif
+        }
+    }*/
+    Printf("Done\n");
+ 
+}
+ 
+ 
+void compare_result (LatticeFermion A, LatticeFermion B, bfm_t & clov)
+{
+ 
+    multi1d<int> x(4);
+ 
+    int Nspinco=12;
+ 
+    Printf("Result vectors \n");
+    for ( x[3]=0; x[3]<clov.node_latt[3]; x[3]++ )
+    {
+        for ( x[2]=0; x[2]<clov.node_latt[2]; x[2]++ )
+        {
+            for ( x[1]=0; x[1]<clov.node_latt[1]; x[1]++ )
+            {
+                for ( x[0]=0; x[0]<clov.node_latt[0]; x[0]++ )
+                {
+ 
+                    int xx[4];
+                    xx[0]=x[0];
+                    xx[1]=x[1];
+                    xx[2]=x[2];
+                    xx[3]=x[3];
+                    Printf("site %d %d %d %d\n",x[0],x[1],x[2],x[3]);
+                    for ( int sp=0; sp<4; sp++ )
+                    {
+                        for ( int co=0; co<3; co++ )
+                        {
+ 
+                            int spco = co+3*sp;
+ 
+                            int reim=0;
+                            Fermion ferm = peekSite(A,x);
+                            ColorVector cv = peekSpin(ferm,sp);
+                            Complex ca = peekColor(cv,co);
+ 
+                            ferm = peekSite(B,x);
+                            cv = peekSpin(ferm,sp);
+                            Complex cb = peekColor(cv,co);
+ 
+                            Printf("%le %le\n",toDouble(real(ca)),toDouble(real(cb)));
+                            Printf("%le %le\n",toDouble(imag(ca)),toDouble(imag(cb)));
+ 
+                        }
+                    }
+ 
+ 
+                }
+            }
+        }
+    }
+ 
+ 
+}
+ 
+ 
+ 
+ 
+ 
+ 

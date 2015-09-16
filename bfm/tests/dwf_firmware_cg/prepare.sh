@@ -1,0 +1,90 @@
+#!/bin/bash
+
+BFM_SRC=../../bfm
+BFM_BLD=../../bfm
+BFM_TEST=../../tests/dwf_firmware_cg
+
+DIR=fwext
+
+mkdir $DIR
+
+BFM_SRC_FILES="bfmbagel2.C \
+    bfmbagel2.h \
+    bfmbase.C \
+    bfm_cg.h \
+    bfmcommfakebagel2.C \
+    bfmcommfakebagel2.h \
+    bfm.h \
+    bfm_import_export.h \
+    bfm_linalg.h \
+    bfm_malloc.C \
+    bfm_mprec.h \
+    bfm_qdp.h \
+    bfm_thread_fw.C \
+    bfm_thread.h \
+    bfm_vmx.h"
+
+BFM_BUILD_FILES="
+    bfm_options.h \
+    bagel_int.h \
+    vmx_1pg5vaxpy_asm.S \
+    vmx_1pg5vaxpy_single_asm.S \
+    vmx_dperp_asm.S \
+    vmx_dperp_dag_asm.S \
+    vmx_dperp_dag_single_asm.S \
+    vmx_dperp_single_asm.S \
+    vmx_dwf_addto_asm.S \
+    vmx_dwf_addto_single_asm.S \
+    vmx_dwf_asm.S \
+    vmx_dwf_dag_addto_asm.S \
+    vmx_dwf_dag_addto_single_asm.S \
+    vmx_dwf_dag_asm.S \
+    vmx_dwf_dag_single_asm.S \
+    vmx_dwf_single_asm.S \
+    vmx_gather_asm.S \
+    vmx_gather_perm_asm.S \
+    vmx_gather_perm_single_asm.S \
+    vmx_gather_proj_asm.S \
+    vmx_gather_proj_perm_asm.S \
+    vmx_gather_proj_perm_single_asm.S \
+    vmx_gather_proj_single_asm.S \
+    vmx_gather_single_asm.S \
+    vmx_scatter_asm.S \
+    vmx_scatter_single_asm.S \
+    vmx_vaxpby_asm.S \
+    vmx_vaxpby_norm_asm.S \
+    vmx_vaxpby_norm_single_asm.S \
+    vmx_vaxpby_single_asm.S \
+    vmx_vaxpy_asm.S \
+    vmx_vaxpy_norm_asm.S \
+    vmx_vaxpy_norm_single_asm.S \
+    vmx_vaxpy_single_asm.S"
+
+TEST_FILES="call_dslash.C \
+    src.C \
+    gauge.C \
+    errno.c"
+
+for f in $BFM_SRC_FILES
+do 
+cp $BFM_SRC/$f $DIR
+done
+
+for f in $BFM_BUILD_FILES
+do 
+cp $BFM_BLD/$f $DIR
+done
+
+for f in $TEST_FILES
+do
+cp $BFM_TEST/$f $DIR/
+done
+
+cd $DIR
+for f in *.C 
+do
+ mv $f `basename $f .C`.cc
+done
+cd -
+
+tar cvf ${DIR}.tar $DIR

@@ -1,0 +1,623 @@
+#include <chroma.h>
+#include <actions/ferm/invert/syssolver_linop_cg_array.h>
+#include <bfm.h>
+#include <bfm_qdp.h>
+#include <eigen/Krylov_5d.h>
+#include <bfm_mcr.h>
+#include "BfmMultiGrid.h"
+
+
+#include <chroma.h>
+#include <actions/ferm/invert/syssolver_linop_cg_array.h>
+#include <actions/ferm/invert/syssolver_linop_aggregate.h>
+#include <bfm_qdp_chroma_linop.h>
+
+//define SOLVER MCR_prec
+#define SOLVER CGNE_prec
+#define UNPREC_SOLVER MCR
+using namespace Chroma;
+
+typedef LatticeFermion T;
+typedef multi1d<LatticeFermion> T5;
+typedef multi1d<LatticeColorMatrix> U;
+
+typedef double number;
+typedef double relax_number;
+
+extern double LittleDopSolverResidual;
+extern int    LittleDopSolver;
+
+#define Printf if ( QMP_is_primary_node() ) printf
+//#define Printf printf
+void LuscherSubspace (int Ls,Fermion_t f, bfm_qdp<double> &dwf);
+void ResidualSubspace (int Ls,Fermion_t f, bfm_qdp<double> &dwf);
+void ResidualSequenceSubspace (int Ls,int nv,Fermion_t *f, bfm_qdp<double> &dwf);
+void NestedInverse (
+		    BfmMultiGrid &ldop,
+		    Fermion_t src,
+		    Fermion_t sol,
+		    Fermion_t resid,
+		    bfm_qdp<double> &dwf_qdp);
+
+int main (int argc,char **argv )
+{
+  Chroma::initialize(&argc,&argv);
+
+
+  /********************************************************
+   * Command line parsing
+   ********************************************************
+   */
+  if ( argc < 11 ) { 
+   Printf("Usage: %s lx ly lz lt Ls Nwanted Tn off rad\n All must be even\n",argv[0]);
+   Printf("Good test: D_oo 4 4 4 4 4 10 30 1.0 6.0 BLCOK");
+   Printf("argc is %d\n",argc);
+   for ( int i=0;i<argc;i++){
+      Printf("%d %s\n",i,argv[i]);
+   }
+   exit(-1);
+  }
+  /********************************************************
+   * Setup QDP
+   ********************************************************
+   */
+  multi1d<int> nrow(Nd);
+  nrow[0] = atoi(argv[1]);
+  nrow[1] = atoi(argv[2]);
+  nrow[2] = atoi(argv[3]);
+  nrow[3] = atoi(argv[4]);
+  int Ls = atoi(argv[5]);
+
+  Layout::setLattSize(nrow);
+  Layout::create();
+
+  int lx = QDP::Layout::subgridLattSize()[0];
+  int ly = QDP::Layout::subgridLattSize()[1];
+  int lz = QDP::Layout::subgridLattSize()[2];
+  int lt = QDP::Layout::subgridLattSize()[3];
+
+  int threads =   omp_get_max_threads();
+  bfmarg::Threads(threads);
+  bfmarg::Reproduce(0);
+  bfmarg::ReproduceChecksum(0);
+  bfmarg::ReproduceMasterCheck(0);
+  bfmarg::Verbose(0);
+  bfmarg::UseCGdiagonalMee(0);
+
+  /********************************************************
+   * Setup DWF operator
+   ********************************************************
+   */
+  bfmarg dwfa;
+  bfm_t  dwf;
+  dwfa.solver = DWF;
+  dwfa.node_latt[0]  = lx;
+  dwfa.node_latt[1]  = ly;
+  dwfa.node_latt[2]  = lz;
+  dwfa.node_latt[3]  = lt;
+  dwfa.verbose=0;
+
+  multi1d<int> procs = QDP::Layout::logicalSize();
+  Printf("%d dim machine\n\t", procs.size());
+  for(int mu=0;mu<4;mu++){
+    Printf("%d ", procs[mu]);
+    if ( procs[mu]>1 ) {
+      dwfa.local_comm[mu] = 0;
+    } else { 
+      dwfa.local_comm[mu] = 1;
+    }
+  }
+  Printf("\nLocal comm = ");
+  for(int mu=0;mu<4;mu++){
+    Printf("%d ", dwfa.local_comm[mu]);
+  }
+  Printf("\n");
+  bfmarg::Threads(threads);
+
+  multi1d<int> ncoor = QDP::Layout::nodeCoord();
+
+  double M5=1.8;
+  double mq=0.00078;
+  dwfa.M5   = M5;
+  dwfa.mass = mq;
+  dwfa.Csw  = 0.0;
+  dwfa.max_iter = 100000;
+  dwfa.residual = 1.e-8;
+  dwfa.Ls   = Ls;
+  //  dwfa.solver    = DWF; //DWFrb4d = 4d preconditioning. DWF = 5d preconditioning
+  //  dwfa.precon_5d = 1;
+  //  dwfa.solver    = DWFrb4d; //DWFrb4d = 4d preconditioning. DWF = 5d preconditioning
+  //  dwfa.precon_5d = 0;
+  dwfa.ScaledShamirCayleyTanh(mq,M5,Ls,2.0);
+
+  Printf("Initialising bfm operator\n"); 
+
+
+  bfm_qdp<number> dwf_qdp;
+  dwf_qdp.init(dwfa);
+
+  bfmarg dwfa_prec = dwfa;
+  //  dwfa_prec.Ls=12;
+  //  dwfa_prec.mass=0.1;
+  bfm_qdp<relax_number> dwf_qdp_sp;
+  dwf_qdp_sp.init(dwfa_prec);
+
+  /********************************************************
+   * Gaussian gauge field
+   ********************************************************
+   */
+
+  multi1d<LatticeColorMatrix>  u(Nd);
+  ArchivGauge_t Header ; readArchiv(Header,u,argv[11]);
+
+  multi1d<LatticeFermion> psi(Ls);
+  multi1d<LatticeFermion> chi(Ls);
+  multi1d<LatticeFermion> chi_deflated(Ls);
+
+  for(int s=0;s<Ls;s++) gaussian(psi[s]);
+  for(int s=0;s<Ls;s++) chi[s]=zero;
+  for(int s=0;s<Ls;s++) chi_deflated[s]=zero;
+
+  /********************************************************
+   * Anti-Periodic Boundary conditions
+   ********************************************************
+   */
+
+    multi1d<int> bcond (Nd);
+    bcond[0] = bcond[1] = bcond[2] = 1; bcond[3] = -1;
+    Handle<FermBC<T,U,U> > fbca (new SimpleFermBC<T,U,U>(bcond));
+    fbca->modify(u); 
+    dwf_qdp.importGauge(u);
+    dwf_qdp_sp.importGauge(u);
+    struct timeval start,stop,diff ;
+
+    dwf.init(dwfa);
+    dwf.importGauge(u);
+
+    Fermion_t psi_h[2];
+    psi_h[0] = dwf.allocFermion();
+    psi_h[1] = dwf.allocFermion();
+    Fermion_t chi_h[2];
+    chi_h[0] = dwf.allocFermion();
+    chi_h[1] = dwf.allocFermion();
+    
+   LatticeFermion ferm;
+   gaussian(ferm);
+
+   for(int s=0;s<Ls;s++) psi[s] = zero;
+   psi[0]   = chiralProjectPlus(ferm);
+   psi[Ls-1]= chiralProjectMinus(ferm);
+   
+/***************************/
+
+ // Printf("Importing psi field cb %d\n",1);
+   dwf_qdp.importFermion(psi,psi_h[0],0);
+   dwf_qdp.importFermion(psi,psi_h[1],1);
+   dwf_qdp.importFermion(chi,chi_h[0],0);
+   dwf_qdp.importFermion(chi,chi_h[1],1); 
+   
+#if 0
+   int Niter = 1;
+   Printf("Calling undeflated unprec solver");
+   for(int n=0; n<Niter; n++){
+     
+#pragma omp parallel 
+     {
+#pragma omp for 
+       for(int i=0;i<threads;i++) {
+	 dwf_qdp.SOLVER(chi_h[1],psi_h[1]);
+       }
+     }
+   }
+#endif
+   
+   int NumberSubspace=atoi(argv[6]);
+
+/***************************/
+ // Printf("Importing psi field cb %d\n",1);
+  dwf_qdp.importFermion(psi,psi_h[0],0);
+  dwf_qdp.importFermion(psi,psi_h[1],1);
+  dwf_qdp.importFermion(chi_deflated,chi_h[0],0);
+  dwf_qdp.importFermion(chi_deflated,chi_h[1],1); 
+
+// Try a little dirac operator
+   int blocksize = atoi(argv[10]);
+   int block[5];
+   block[0]=blocksize;
+   block[1]=blocksize;
+   block[2]=blocksize;
+   block[3]=blocksize;
+   block[4]=Ls;
+
+   Fermion_t src = dwf_qdp.allocFermion(); 
+   Fermion_t tmp = dwf_qdp.allocFermion(); 
+   Fermion_t Mtmp= dwf_qdp.allocFermion(); 
+   Fermion_t resid= dwf_qdp.allocFermion(); 
+
+#pragma omp parallel 
+  {
+#pragma omp for 
+    for(int i=0;i<threads;i++) {
+      // Schur complement / decompose entry to get same source
+      dwf_qdp.MooeeInv(psi_h[Even],tmp,DaggerNo);
+      dwf_qdp.Meo     (tmp,src,Odd,DaggerNo);
+      dwf_qdp.axpy    (tmp,src,psi_h[Odd],-1.0);
+      dwf_qdp.Mprec(tmp,src,Mtmp,DaggerYes);  
+    }
+  }
+
+  QDPIO::cout << "Creating little Dirac op for "<< NumberSubspace<< " vectors"<<endl;
+
+  BfmMultiGrid ldop(Ls,NumberSubspaceTrunc,block,&dwf_qdp);
+  ldop.RelaxSubspace<relax_number>(&dwf_qdp_sp);
+
+  int ns = ldop.SubspaceLocalDimension();
+  QDPIO::cout << "local  subspace dimension is "<< ns<<endl;
+  QDPIO::cout << "global subspace dimension is "<< ldop.SubspaceDimension()<<endl;
+  QMP_barrier();
+
+  std::vector<std::complex<double>  > res(ns);
+  std::vector<std::complex<double>  > Ares(ns);
+
+#ifdef DOEIGEN
+  QDPIO::cout << "Completeness of eigenbasis test"<<endl;
+
+  for(int e=0;e<subspace.size();e++){
+    Fermion_t tmpO = dwf_qdp.allocFermion();
+    Fermion_t tmpI = dwf_qdp.allocFermion();
+    multi1d<LatticeFermion> tmpF(Ls);
+    for(int s=0;s<Ls;s++) tmpF[s]=zero;
+    dwf_qdp.importFermion(subspace[e],tmpI,1);
+
+#pragma omp parallel 
+    {
+#pragma omp for 
+      for(int i=0;i<threads;i++) {
+	ldop.ProjectToSubspace(tmpI,res);
+	ldop.PromoteFromSubspace(res,tmpO);
+      }
+    }
+    dwf_qdp.exportFermion(tmpF,tmpO,1);
+    QDPIO::cout << e<<" completeness "<< norm2(tmpF-subspace[e]) << " " <<norm2(tmpF)<< " " << norm2(subspace[e]) << endl;
+    dwf_qdp.freeFermion(tmpO);
+    dwf_qdp.freeFermion(tmpI);
+  }
+
+  QDPIO::cout << "Completeness of eigenbasis by s-slice"<<endl;
+  for(int e=0;e<subspace.size();e++){
+
+    for(int s=0;s<Ls;s++){
+      Fermion_t tmpO = dwf_qdp.allocFermion();
+      Fermion_t tmpI = dwf_qdp.allocFermion();
+      multi1d<LatticeFermion> tmpF(Ls);
+
+      QDPIO::cout << "******** slice "<<s <<endl;
+      for(int ss=0;ss<Ls;ss++) {
+	tmpF[ss]=zero;
+      }
+      dwf_qdp.importFermion(tmpF,tmpI,1);
+      dwf_qdp.importFermion(subspace[e][s],tmpI,1,s);
+
+#pragma omp parallel 
+    {
+#pragma omp for 
+      for(int i=0;i<threads;i++) {
+	ldop.ProjectToSubspace(tmpI,res);
+	ldop.PromoteFromSubspace(res,tmpO);
+      }
+    }
+    dwf_qdp.exportFermion(tmpF,tmpO,1);
+    QDPIO::cout << "Evec " << e<<" completeness s="<<s<<" " << norm2(tmpF[s]-subspace[e][s]) << " " <<norm2(tmpF[s])<< " " << norm2(subspace[e][s]) << endl;
+    dwf_qdp.freeFermion(tmpO);
+    dwf_qdp.freeFermion(tmpI);
+
+    }
+  }
+#endif
+  
+  FlightLog("Computing little  operator using coloring");
+#pragma omp parallel 
+  {
+#pragma omp for 
+    for(int i=0;i<threads;i++) {
+      ldop.ComputeLittleMatrixColored();
+    }
+  }
+
+  int nv=128;
+  QDPIO::cout << "Initialising second level deflation for Nvec="<< nv<<endl;
+  ldop.LdopDeflationBasisInit(nv);
+
+
+#define POLYPREC
+#ifdef POLYPREC
+  FlightLog("SOLVING WITH POLYPREC");
+  //  QDPIO::cout << "Using Ls=8 preconditioner "<<endl;
+  //  ldop.PreconditionWithLinop(&dwf_qdp_prec);
+#pragma omp parallel 
+  {
+#pragma omp for 
+    for(int i=0;i<threads;i++) {
+
+      dwf_qdp.axpy(chi_h[Odd],src,src,0.0);
+      ldop.CG_PolyPrec(chi_h[Odd],src);
+
+      /*
+      dwf_qdp.axpy(chi_hh[Odd],src,src,0.0);
+      ldop.fCG_PolyPrec(chi_hh[Odd],src);
+      */
+
+      dwf_qdp.axpy(chi_h[Odd],src,src,0.0);
+      ldop.MCR_PolyPrec(chi_h[Odd],src);
+
+      //      ldop.GCR_PolyPrec(chi_hh[Odd],src,16);
+    }
+  }
+#endif
+  FlightLog("DONE");
+  exit(0);
+  QDPIO::cout << " Nested inverse test" <<endl;
+#pragma omp parallel 
+    {
+#pragma omp for 
+      for(int i=0;i<threads;i++) {
+	dwf_qdp.set_zero(chi_hh[Odd]);
+      }
+    }
+    NestedInverse (ldop,
+		   src,
+		   chi_hh[Odd],resid,dwf_qdp);
+
+  FlightLog("DONE");
+
+  exit(0);
+
+#if 0
+  exit(0);
+  QDPIO::cout << "Completeness of residual test"<<endl;
+  FILE * fp;
+  if ( dwf_qdp.isBoss() ) fp=fopen("resid.dat","w");
+  for(double rr=1.0e-4;rr>0.9e-12;rr=rr/10.0){
+
+    dwf_qdp.residual=rr;
+#pragma omp parallel 
+  {
+#pragma omp for 
+    for(int i=0;i<threads;i++) {
+      //zero the solution
+      if ( 1 ) dwf_qdp.axpby(chi_hh[Odd],chi_hh[Odd],chi_hh[Odd],0.0,0.0);
+      dwf_qdp.SOLVER(chi_hh[Odd],src);
+      dwf_qdp.Mprec(chi_hh[Odd],tmp,Mtmp,DaggerNo);  
+      dwf_qdp.Mprec(tmp,resid,Mtmp,DaggerYes);  
+      dwf_qdp.axpy (resid,resid,src,-1.0);
+
+    }
+  }
+
+  
+  {
+    double n2diff;
+    double n2r;
+#pragma omp parallel 
+    {
+#pragma omp for 
+      for(int i=0;i<threads;i++) {
+
+	ldop.ProjectToSubspace(resid,res);
+	ldop.PromoteFromSubspace(res,chi_hh[0]);
+	dwf_qdp.axpy(chi_hh[0],chi_hh[0],resid,-1.0);
+	n2diff = dwf_qdp.norm(chi_hh[0]);
+	n2r    = dwf_qdp.norm(resid);
+      }
+    }
+    if ( dwf_qdp.isBoss() ) fprintf(fp,"%le %le %le %le %le\n",rr,n2diff,n2r,n2diff/n2r,1.0-n2diff/n2r);
+    QDPIO::cout << "diff/nrm = "<<n2diff<<"/"<<n2r <<endl;
+  }
+  }
+  if ( dwf_qdp.isBoss() ) fclose(fp);
+
+#endif
+
+  QDPIO::cout << "Undeflated inversion to 10^-12\n ";
+
+  dwf_qdp.residual = 1.0e-12;
+#pragma omp parallel 
+    {
+#pragma omp for 
+      for(int i=0;i<threads;i++) {
+	dwf_qdp.set_zero(chi_hh[Odd]);
+	int iter = dwf_qdp.SOLVER(chi_hh[Odd],src);
+      }
+    }
+
+  dwf_qdp.freeFermion(psi_hh[0]);
+  dwf_qdp.freeFermion(psi_hh[1]);
+  dwf_qdp.freeFermion(chi_hh[0]);
+  dwf_qdp.freeFermion(chi_hh[1]);
+  dwf_qdp.end();
+
+}
+
+//In MCR and CG the sequence of estimated residuals
+//is a function of current residual, search direction and iteration number.
+//
+//Wish to return the current search direction and true residual from the solver
+//and provide a routine to step this. Use this as a basis for the inexact deflation.
+//
+
+void NestedInverse (BfmMultiGrid &ldop,
+		    Fermion_t src,
+		    Fermion_t sol,
+		    Fermion_t resid,
+		    bfm_qdp<double> &dwf_qdp)
+{
+
+  Fermion_t tmp  = dwf_qdp.allocFermion();
+  Fermion_t xc   = dwf_qdp.allocFermion();
+  Fermion_t dxc   = dwf_qdp.allocFermion();
+  Fermion_t Mtmp = dwf_qdp.allocFermion();
+
+  double nsrc,nr,nrr,nrrs;
+  int threads = dwf_qdp.threads;
+#pragma omp parallel 
+  {
+#pragma omp for 
+    for(int i=0;i<threads;i++) {
+      nsrc =dwf_qdp.norm(src);
+      dwf_qdp.set_zero(sol);
+    }
+  }
+  
+  int ns = ldop.SubspaceLocalDimension();
+  std::vector<std::complex<double>  > res(ns);
+  std::vector<std::complex<double>  > Ares(ns);
+  QDPIO::cout << "Source norm " << sqrt(ns) << endl;
+  
+  LittleDopSolver=LittleDopSolverMCR;
+  LittleDopSolverResidual=1.0e-5;
+  int iters=0;
+  while(1){
+
+    dwf_qdp.max_iter = 150;
+    // Compute true residual
+#pragma omp parallel 
+    {
+#pragma omp for 
+      for(int i=0;i<threads;i++) {
+	dwf_qdp.Mprec(sol,tmp,Mtmp,DaggerNo);  
+	dwf_qdp.Mprec(tmp,resid,Mtmp,DaggerYes);  
+	dwf_qdp.axpy (resid,src,resid,-1.0);                  // r = M sol - src
+	nr =dwf_qdp.norm(resid);
+      }
+    }
+    QDPIO::cout << "True residual " << sqrt(nr/nsrc) << endl;
+    if ( sqrt(nr/nsrc) < 1.0e-8 ) { 
+      QDPIO::cout << "converged with residual " << sqrt(nr/nsrc) << " after "<<iters <<" iterations"<<endl;
+      return;
+    }
+    // Evaluate Dss^-1 resid
+    {
+#pragma omp parallel 
+    {
+#pragma omp for 
+      for(int i=0;i<threads;i++) {
+	ldop.ProjectToSubspace(resid,res);
+	ldop.ApplyInverse(res,Ares);
+	ldop.PromoteFromSubspace(Ares,xc);        // xc=P Ainv R (M sol-src)  xcoarse
+
+	// sol' =  sol - P Ainv R [Msol-src] 
+	//      <=> M sol' - src = [M sol - src] - M Ainv [M sol - src]  ~ 0
+	dwf_qdp.axpy (sol,xc,sol,-1.0);
+      }
+    }
+    }
+
+    double dxcn;
+#pragma omp parallel 
+    {
+#pragma omp for 
+      for(int i=0;i<threads;i++) {    
+
+	// recompute resid
+	dwf_qdp.Mprec(sol,tmp,Mtmp,DaggerNo);  
+	dwf_qdp.Mprec(tmp,resid,Mtmp,DaggerYes);  
+	dwf_qdp.axpy (resid,src,resid,-1.0);       //  M sol - src
+
+	nrr =dwf_qdp.norm(resid);
+	ldop.ProjectToSubspace(resid,res);
+	nrrs=ldop.norm_vec(res);
+      }
+    }
+    QDPIO::cout << "Deflation residual   " << sqrt(nrr/nsrc) <<endl;
+    QDPIO::cout << "Deflation residual_s " << sqrt(nrrs/nsrc) <<endl;
+     
+    dwf_qdp.residual = 1.0e-8;  // Solve to present residual
+#pragma omp parallel 
+    {
+#pragma omp for 
+      for(int i=0;i<threads;i++) {    
+	int iter = dwf_qdp.SOLVER(sol,src);
+	iters+=iter;
+      }
+    }
+
+  }
+
+  dwf_qdp.freeFermion(dxc);
+  dwf_qdp.freeFermion(xc);
+  dwf_qdp.freeFermion(tmp);
+  dwf_qdp.freeFermion(Mtmp);
+}
+void ResidualSubspace (int Ls,Fermion_t vec, bfm_qdp<double> &dwf)
+{
+  multi1d<LatticeFermion> gauss(Ls);
+  for(int s=0;s<Ls;s++) gaussian(gauss[s]);
+  Fermion_t src = dwf.allocFermion();
+  Fermion_t sol = dwf.allocFermion();
+  dwf.importFermion(gauss,src,1);
+  double restore_residual = dwf.residual;
+  dwf.residual = 1.0e-6;
+#pragma omp parallel 
+  {
+    int threads = omp_get_num_threads();
+#pragma omp for 
+    for(int i=0;i<threads;i++) {
+      dwf.MCR_prec(sol,src,&vec,1);
+    }
+  }
+  dwf.freeFermion(sol);
+  dwf.freeFermion(src);
+  dwf.residual= restore_residual;
+}
+
+void ResidualSequenceSubspace (int Ls,int nvec,Fermion_t *vec, bfm_qdp<double> &dwf)
+{
+  multi1d<LatticeFermion> gauss(Ls);
+  for(int s=0;s<Ls;s++) gaussian(gauss[s]);
+  Fermion_t src = dwf.allocFermion();
+  Fermion_t sol = dwf.allocFermion();
+  dwf.importFermion(gauss,src,1);
+  double restore_residual = dwf.residual;
+  dwf.residual = 1.0e-6;
+#pragma omp parallel 
+  {
+    int threads = omp_get_num_threads();
+#pragma omp for 
+    for(int i=0;i<threads;i++) {
+      dwf.MCR_prec(sol,src,vec,nvec);
+    }
+  }
+  dwf.freeFermion(sol);
+  dwf.freeFermion(src);
+  dwf.residual= restore_residual;
+}
+
+
+
+void LuscherSubspace (int Ls,Fermion_t sol, bfm_qdp<double> &dwf)
+{
+  multi1d<LatticeFermion> gauss(Ls);
+  for(int s=0;s<Ls;s++){
+    gaussian(gauss[s]);
+  }
+  Fermion_t src = dwf.allocFermion();
+  dwf.importFermion(gauss,src,1);
+  double restore_residual = dwf.residual;
+  dwf.residual = 1.0e-6;
+#pragma omp parallel 
+  {
+    int threads = omp_get_num_threads();
+#pragma omp for 
+    for(int t=0;t<threads;t++) {
+      for(int i=0;i<1;i++){
+	dwf.SOLVER(sol,src);
+	dwf.axpy(src,sol,sol,0.0);
+      }
+    }
+  }
+  dwf.freeFermion(src);
+  dwf.residual= restore_residual;
+}
+
+
+

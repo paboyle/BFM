@@ -1,0 +1,50 @@
+BGQ_INSTALL_DIR=/bgsys/bgq/drivers/ppcfloor
+
+
+runmmcslite: all bgq-junk
+	$(BGQ_INSTALL_DIR)/scripts/runfctest.sh \
+	--ttype cnk \
+	--program $(PROGRAMS) \
+	--svchost pers.svchost \
+	--noobjdump \
+	--location Q02-I0-J00 \
+	--bootoptions use_vpd_ecid_core_mask \
+	--tolerate_faults \
+	--numnodes 2 \
+	--script runMmcsLite \
+	--timelimit 36000 \
+	$(parms) \
+	-- -qmp-geom 2 1 1 1
+
+
+runfpga: install bgq-junk
+	$(BGQ_INSTALL_DIR)/scripts/runfctest.sh \
+	--ttype cnk \
+	--program $(PROGRAMS) \
+	--numcores 17 \
+	--llclass tstar_normal \
+	--svchost pers.svchost \
+	--maxtime  9200000000 \
+	--script runFpga \
+	--llwall_clock_limit 14:00 --llnotify_user paboyle@us.ibm.com \
+	$(parms)
+
+runfpga_emerg: install bgq-junk
+	$(BGQ_INSTALL_DIR)/scripts/runfctest.sh \
+	--ttype cnk \
+	--program $(PROGRAMS) \
+	--numcores 17 \
+	--llclass tstar_emergency \
+	--svchost pers.svchost \
+	--maxtime  9200000000 \
+	--script runFpga \
+	--llwall_clock_limit 29:00 --llnotify_user paboyle@us.ibm.com \
+	$(parms)
+
+
+bgq-junk:
+	echo +MMU > pers.svchost
+	echo +DDRSize=4096 >> pers.svchost
+	echo +MU >> pers.svchost
+	echo +ND >> pers.svchost
+

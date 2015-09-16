@@ -1,0 +1,57 @@
+/**
+ * \file
+ * \brief Provides support for Intel MIC Knights Corner.
+ * \author Bernhard Mendl
+ *
+ *  Copyright Peter Boyle & Glasgow University, 2000.
+ *  This software is provided for NON-COMMERCIAL use only,
+ *  It is provided under the GNU pubic License V2
+ *  It is provided as is and is not guaranteed fit for any purpose.
+ */
+
+
+#ifndef MIC_H_INCLUDED
+#define MIC_H_INCLUDED 1
+
+// MIC mask registers
+#define MIC_MASK_ODD      7  /* enable odd vector elements */
+#define MIC_MASK_EVEN     6  /* enable even vector elements */
+#define MIC_MASK_SCALFLOP 5  /* for scalar floating-point operations on vectors */
+#define MIC_MASK_EVEN_PAIRS 4  /* enable even pairs of vector elements */
+#define MIC_MASK_ODD_PAIRS  3
+#define MIC_MASK_MU3        2
+#define MIC_MASK_MU2        MIC_MASK_EVEN_PAIRS
+#define MIC_MASK_CMUL     MIC_MASK_EVEN  /* write-mask register for merging final result of complex multiplication */
+#define MIC_MASK_FULL     0  /* enable all elements; NB: %k0 is set to 0xFFFF BY HARDWARE! */
+
+
+// MIC shuffle patterns (also see zmmintrin.h of Intel ComposerXE)
+#define MIC_PERM_CCAA 0xA0  /* b10100000 */
+#define MIC_PERM_DCDC 0xEE  /* b11101110 */
+
+/*
+ * STACK_POLICY defines which registers are saved on stack on a function call.
+ */
+#define STACK_POLICY_ALL_IREGS 0x01  ///< Save all integer regs.
+#define STACK_POLICY_ALL_FREGS 0x02  ///< Save all fp/vec regs.
+#define STACK_POLICY_ALL       0x03  ///< Save both Iregs and Fregs.
+#define STACK_POLICY_LINUX_ABI 0x04  ///< Save only regs to be saved acc. to x86-64 Linux ABI.
+//#define STACK_POLICY_USED_ONLY 0x08  ///< Save only those regs which are used by callee. TODO: This option is not implemented yet. Must tweak save_regs() such that PUSH operations are  belatedly inserted in the instruction queue on Exit_Routine. It is not until Exit_Routine that registers to be saved are known.
+
+// choose which policy to use
+#define STACK_POLICY STACK_POLICY_LINUX_ABI
+
+
+void create_knc_instructions(struct processor *proc);
+struct processor *create_knc();
+void directive_print_knc(struct instruction *i);
+void queue_cmovgt_knc(int cond, int src, int dst);
+void queue_cmovlt_knc(int cond, int src, int dst);
+void queue_cmovle_knc(int cond, int src, int dst);
+void queue_cmovge_knc(int cond, int src, int dst);
+void cache_print_knc(struct instruction *i);
+int start_loop_knc(int counter);
+void stop_loop_knc(int branchno, int counter);
+void check_iterations_knc(int cntreg, int retno);
+
+#endif  /* MIC_H_INCLUDED */

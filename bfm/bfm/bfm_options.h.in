@@ -1,0 +1,55 @@
+/* bfm/bfm_options.h.in.  Generated from configure.ac by autoheader.  */
+
+/* Width of Complex SIMD arithmetic */
+#undef BAGEL_NSIMD
+
+/* NOARCH target */
+#undef BFM_BGQ_SPI_DSLASH
+
+/* BFM_CHROMA_BINDING enabled */
+#undef BFM_CHROMA_BINDING
+
+/* NOARCH target */
+#undef BFM_FAKE
+
+/* NOARCH target */
+#undef BFM_IROIRO
+
+/* BFM_QDP_BINDING enabled */
+#undef BFM_QDP_BINDING
+
+/* NOARCH target */
+#undef BFM_QMP
+
+/* Name of package */
+#undef PACKAGE
+
+/* Define to the address where bug reports for this package should be sent. */
+#undef PACKAGE_BUGREPORT
+
+/* Define to the full name of this package. */
+#undef PACKAGE_NAME
+
+/* Define to the full name and version of this package. */
+#undef PACKAGE_STRING
+
+/* Define to the one symbol short name of this package. */
+#undef PACKAGE_TARNAME
+
+/* Define to the version of this package. */
+#undef PACKAGE_VERSION
+
+/* openmp threads */
+#undef THREAD_MODEL_OPENMP
+
+/* single threaded */
+#undef THREAD_MODEL_SINGLE
+
+/* bgq spi */
+#undef THREAD_MODEL_SPI
+
+/* XLC OPTIMISED CODE PATHS ENABLED */
+#undef USE_XLC_OPTIMISED_CODE
+
+/* Version number of package */
+#undef VERSION

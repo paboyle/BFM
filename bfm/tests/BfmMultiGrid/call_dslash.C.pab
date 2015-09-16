@@ -1,0 +1,515 @@
+#include <qdp.h>
+#include <bfm.h>
+#include <bfm_qdp.h>
+#include <bfm_qdp_g5d.h>
+#include <bfm_qdp_dwf.h>
+#include <bfm_qdp_chroma_linop.h>
+#include <bfm_wrapper.h>
+
+#define Printf if ( QMP_is_primary_node() ) printf
+
+#include <bfmcommqmp.h>
+#include <bfmcommspi.h>
+typedef bfmcommQMP<double> bfm_qmp;
+
+void test_solver(BfmSolver solver);
+
+class DeflationBlockSet : public SetFunc 
+{
+public:
+  int BlockSize;
+  int nbx;
+  int nby;
+  int nbz;
+  int nbt;
+
+  DeflationBlockSet(int _BlockSize) : BlockSize(_BlockSize)
+  {
+    nbx = Layout::lattSize()[0]/BlockSize;
+    nby = Layout::lattSize()[1]/BlockSize;
+    nbz = Layout::lattSize()[2]/BlockSize;
+    nbt = Layout::lattSize()[3]/BlockSize;
+    if ( nbx*BlockSize !=  Layout::lattSize()[0] ) QDP_error_exit("BlockSize err");
+    if ( nby*BlockSize !=  Layout::lattSize()[1] ) QDP_error_exit("BlockSize err");
+    if ( nbz*BlockSize !=  Layout::lattSize()[2] ) QDP_error_exit("BlockSize err");
+    if ( nbt*BlockSize !=  Layout::lattSize()[3] ) QDP_error_exit("BlockSize err");
+    QDPIO::cout << "Made SetFunc"<<endl;
+  } 
+
+  public: int operator() (const multi1d<int>& coordinate) const
+  {
+    int bx = coordinate[0]/BlockSize;
+    int by = coordinate[1]/BlockSize;
+    int bz = coordinate[2]/BlockSize;
+    int bt = coordinate[3]/BlockSize;
+    int block = bx+nbx*(by+nby*(bz+nbz*bt));
+    //    cout << coordinate[0] <<coordinate[1] <<coordinate[2] <<coordinate[3] << "  -> " << block<<endl;
+    return block;
+  }
+  int numSubsets() const {return nbx*nby*nbz*nbt;}
+  
+};
+
+
+class LittleDiracOperator { 
+public:
+  int BlockSize;
+  int Nblock4;
+  int Nblock;
+  int Nvec;
+  int Nsubspace;
+  int N5;
+  multi1d<multi1d<LatticeFermion> > subspace;
+  Set Blocks;
+  multi2d<DComplex> A;
+  multi2d<DComplex> Ainv;
+
+  int SubspaceIndex(int _block4,int _s,int _vec) {    return _block4 + _s*Nblock4 + _vec*Nblock ; }
+
+  LittleDiracOperator(int _BlockSize,multi1d<multi1d<LatticeFermion> > &_subspace) 
+    : BlockSize(_BlockSize),  subspace(_subspace)
+  {
+    QDPIO::cout << "Constructor entered"<<endl;
+    Nvec   = subspace.size();
+    N5     = subspace[0].size();
+    QDPIO::cout << "Making Blocks for BlockSize"<< BlockSize<<endl;
+    Blocks.make(DeflationBlockSet(BlockSize));
+    Nblock4= Blocks.numSubsets();
+    Nblock = Blocks.numSubsets()*N5;
+    Nsubspace=Nblock*Nvec; // Dimension of subspace
+    A.resize(Nsubspace,Nsubspace);
+    Ainv.resize(Nsubspace,Nsubspace);
+    QDPIO::cout << "Constructor exit"<<endl;
+    OrthogonaliseSubspace();
+  }
+  ~LittleDiracOperator() {};
+
+  void OrthogonaliseSubspace(void);
+  void PickBlock (const LatticeFermion &was, LatticeFermion &is,int b);
+  void ComputeLittleMatrix (Handle< UnprecLinearOperatorArray<T4,U,U> > & linop);
+  void ProjectToSubspace(multi1d<LatticeFermion> &vec, multi1d<DComplex> &proj);
+  void PromoteFromSubspace(multi1d<DComplex> &v, multi1d<LatticeFermion> &prom);
+  void Apply(multi1d<DComplex> &,multi1d<DComplex> & );
+  void ApplyInverse(multi1d<DComplex> &,multi1d<DComplex>&);
+  int SubspaceDimension(void){return Nsubspace;};
+
+  // Tests: project a linear combination of subspace vecs to subspace & repromote
+  //        should be compete (identity).
+  //
+  //        phi^dag DdagD phi = |Dphi|^2 with phi a subspace vector
+  //        should be equal to Project/Apply/Promote + inner product
+  // 
+  //        Subspace inverse of D acting on a vector in subspace should give identity
+
+};
+void LittleDiracOperator::OrthogonaliseSubspace(void)
+{
+  // Normalise for now
+  for(int v=0;v<Nvec;v++){
+
+    // Remove earlier (normalised) vectors
+    for(int s=0;s<N5;s++){
+      for(int u=0;u<v;u++){
+	LatticeComplex lip   = localInnerProduct(subspace[u][s],subspace[v][s]);
+	multi1d<Complex> bip = sumMulti(lip,Blocks);
+	LatticeComplex linearcomb;
+	for(int b=0;b<bip.size();b++){
+	  linearcomb[Blocks[b]]=bip[b];
+	}
+	subspace[v][s] = subspace[v][s]-linearcomb* subspace[u][s];
+      }
+    }
+    
+    // Normalise this vector
+    for(int s=0;s<N5;s++){
+      LatticeReal ln   = localNorm2(subspace[v][s]);
+      multi1d<Real> bn = sumMulti(ln,Blocks);
+      LatticeReal scale;
+      for(int b=0;b<bn.size();b++){
+	scale[Blocks[b]] = 1.0/sqrt(bn[b]);
+      }
+      subspace[v][s] = subspace[v][s]*scale;
+    }
+  }
+  for(int v=0;v<Nvec;v++){
+  for(int u=0;u<Nvec;u++){
+  QDPIO::cout<<" <"<<u<<"|"<<v<<"> = " ;
+  for(int s=0;s<N5;s++){
+    LatticeComplex lip   = localInnerProduct(subspace[u][s],subspace[v][s]);
+    multi1d<Complex> bip = sumMulti(lip,Blocks);
+    for(int i=0;i<bip.size();i++) 
+      QDPIO::cout << bip[i] <<" ";
+  }
+  QDPIO::cout << endl;
+  }}
+}
+void LittleDiracOperator::PickBlock (const LatticeFermion &was, LatticeFermion &is,int b)
+{
+  is=zero;
+  is[Blocks[b]] = was;
+}
+void LittleDiracOperator::ComputeLittleMatrix (Handle< UnprecLinearOperatorArray<T4,U,U> > & linop)
+{
+  LatticeFermion phi_i;
+  multi1d<LatticeFermion> Dphi_i(N5);
+  multi1d<LatticeFermion> tmp(N5);
+
+  for(int v_i=0;v_i<Nvec;v_i++){
+    for(int s_i=0;s_i<N5;s_i++){
+      for(int b_i=0;b_i<Nblock4;b_i++){
+
+	int i=SubspaceIndex(b_i,s_i,v_i);
+	// Inefficient first cut. Should use coloring to apply D to 
+	// multiple blocks in parallel. Modest factor easily obtain
+	// By doing this in the s-dimension only.
+	// Presently applies D^dagD Nblock times
+	// Big perf jump if simply throw this off to Bagel.
+	PickBlock(subspace[v_i][s_i],phi_i,b_i);
+	
+	Dphi_i=zero;
+	Dphi_i[s_i] = phi_i;
+
+	(*linop)(tmp,Dphi_i,PLUS);
+	(*linop)(Dphi_i,tmp,MINUS);
+
+	multi1d<Complex> proj(Nsubspace);
+	ProjectToSubspace(Dphi_i,proj);
+	for(int j=0;j<Nsubspace;j++){
+	  A[j][i] = proj[j];
+	}
+      }
+    }
+  }
+}
+void LittleDiracOperator::ProjectToSubspace(multi1d<LatticeFermion> &vec, multi1d<DComplex> &proj)
+{
+  proj.resize(Nsubspace);
+  proj=zero;
+  for(int v_j=0;v_j<Nvec;v_j++){
+    for(int s_j=0;s_j<N5;s_j++){ 
+      // Local inner product route is reasonably efficient
+      // Block ops performed on complex
+      LatticeComplex lip   = localInnerProduct(subspace[v_j][s_j],vec[s_j]);
+      multi1d<Complex> bip = sumMulti(lip,Blocks);
+      for(int b_j=0;b_j<Nblock4;b_j++){
+	int j = SubspaceIndex(b_j,s_j,v_j);
+	proj[j] = bip[b_j];
+      }
+    }
+  }
+}
+void LittleDiracOperator::PromoteFromSubspace(multi1d<DComplex> &v, multi1d<LatticeFermion> &prom)
+{
+  LatticeFermion phi_i;
+  prom=zero;
+  for(int v_i=0;v_i<Nvec;v_i++){
+    for(int s_i=0;s_i<N5;s_i++){
+      LatticeComplex coeff;
+      for(int b_i=0;b_i<Nblock4;b_i++){
+	int i=SubspaceIndex(b_i,s_i,v_i);
+	coeff[Blocks[b_i]] = v[i];
+      }
+      prom[s_i]+=coeff*subspace[v_i][s_i]; // Reasonably efficient way
+    }
+  }
+}
+void LittleDiracOperator::Apply(multi1d<DComplex> &in,multi1d<DComplex> &out)
+{
+  out=zero;
+  for(int i=0;i<Nsubspace;i++){
+  for(int j=0;j<Nsubspace;j++){
+    out[i] += A[i][j] * in[j];
+  }}
+}
+void LittleDiracOperator::ApplyInverse(multi1d<DComplex> &v,multi1d<DComplex> &vinv)
+{
+  // Conjugate gradient on A. A is hermitian posdef.
+  multi1d<DComplex> p(Nsubspace);
+  multi1d<DComplex> Ap(Nsubspace);
+  multi1d<DComplex> r(Nsubspace);
+
+  vinv=0;
+  r=v;
+  p=r;
+
+  Real a;
+  Real b;
+  Real c;
+  Real d;
+  Real cp;
+  Real ssq;
+  Real rsq;
+
+  ssq=norm2(v);
+  a  =norm2(p);
+  cp =norm2(r);
+  rsq = 1.0e-20*ssq;
+ 
+  QDPIO::cout << "Source^2 = " << ssq<<endl;
+  QDPIO::cout << "Target^2 = " << rsq<<endl;
+
+  for(int k=1;k<10000;k++){
+    c=cp;
+    Apply(p,Ap);
+    d=innerProductReal(p,Ap);
+    a=c/d;
+    for(int i=0;i<Nsubspace;i++){
+      r[i]=r[i]-a*Ap[i];
+    }
+    cp=norm2(r);
+    b=cp/c;
+    for(int i=0;i<Nsubspace;i++){
+      vinv[i]=vinv[i]+a*p[i];
+      p[i]=b*p[i]+r[i];
+    }
+    QDPIO::cout << "LittleDiracInversion ["<<k<<"] r^2="<<cp <<endl;
+    if(toDouble(cp)<toDouble(rsq)) {
+      QDPIO::cout << "LittleDiracInversion converged "<<endl;
+      Apply(vinv,Ap);
+      QDPIO::cout << "LittleDiracInversion true residual "<<norm2(v-Ap) <<endl;
+      return;
+    }
+  }
+  QDP_error_exit("Little Dirac Matrix inversion failed\n");
+}
+
+
+int main (int argc,char **argv )
+{
+  Chroma::initialize(&argc,&argv);
+
+  WilsonTypeFermActs4DEnv::registerAll(); 
+  LinOpSysSolverArrayEnv::registerAll();
+
+  /********************************************************
+   * Command line parsing
+   ********************************************************
+   */
+#define COMMANDLINE
+#ifdef COMMANDLINE
+  if ( argc != 6 ) { 
+   Printf("Usage: %s lx ly lz lt Ls\n All must be even\n",argv[0]);
+   Printf("argc is %d\n",argc);
+   for ( int i=0;i<argc;i++){
+      Printf("%d %s\n",i,argv[i]);
+   }
+      exit(-1);
+  }
+#endif
+
+  /********************************************************
+   * Setup QDP
+   ********************************************************
+   */
+  multi1d<int> nrow(Nd);
+#ifdef COMMANDLINE
+  nrow[0] = atoi(argv[1]);
+  nrow[1] = atoi(argv[2]);
+  nrow[2] = atoi(argv[3]);
+  nrow[3] = atoi(argv[4]);
+#else
+  nrow[0] = 4;
+  nrow[1] = 2;
+  nrow[2] = 2;
+  nrow[3] = 4;
+#endif
+
+
+  bfmarg::Threads(1);
+  Layout::setLattSize(nrow);
+  Layout::create();
+
+
+
+  test_solver(HtCayleyTanh);
+
+}
+
+void test_solver(BfmSolver solver)
+{
+
+  g5dParams parms;
+
+  int Ls=8;
+  double M5=1.8;
+  double mq=0.1;
+  double wilson_lo = 0.05;
+  double wilson_hi = 6.8;
+  double shamir_lo = 0.025;
+  double shamir_hi = 1.7;
+  double ht_scale=1.7;
+  double hw_scale=1.0;
+
+  if ( solver != HtCayleyTanh ) { 
+    exit(0);
+    Printf("Should be testing HtCayleyTanh aka DWF\n");
+  }
+  parms.ShamirCayleyTanh(mq,M5,Ls);
+
+  multi1d<LatticeColorMatrix> u(4);
+  HotSt(u);
+
+  multi1d<LatticeFermion> src(Ls);
+  multi1d<LatticeFermion> check(Ls);
+
+#define NumberGaussian (5)
+  multi1d< multi1d<LatticeFermion> > subspace(NumberGaussian);
+
+  for(int s=0;s<Ls;s++){
+    gaussian(src[s]);
+    gaussian(check[s]);
+  }
+
+  for(int g=0;g<NumberGaussian;g++){
+    subspace[g]=src;
+    for(int s=0;s<Ls;s++){
+      gaussian(subspace[g][s]);
+    }
+  }
+
+  Handle< UnprecLinearOperatorArray<T,U,U> > linop =GetLinOp(u, parms);
+  subspace[0]=check;
+
+#undef TESTS
+#ifdef TESTS
+
+  QDPIO::cout << "Initialised dirac op"<<endl;
+  LittleDiracOperator ldop(4,subspace);
+
+  int ns = ldop.SubspaceDimension();
+  QDPIO::cout << "subspace dimension is "<< ns<<endl;
+
+  multi1d<DComplex> decomp(ns);
+
+  ldop.ProjectToSubspace(subspace[0],decomp);
+  for(int s=0;s<ns;s++){
+    QDPIO::cout << "coeff "<<s<<" " << decomp[s]<<endl;
+  }
+  ldop.PromoteFromSubspace(decomp,check);
+  QDPIO::cout << "project/promote n2diff "<< norm2(check-subspace[0])<<endl;
+
+  QDPIO::cout << "Computing little dirac matrix"<<endl;
+  ldop.ComputeLittleMatrix(linop);
+
+
+  multi1d<DComplex> Aphi(ns);
+  //        phi^dag DdagD phi = |Dphi|^2 with phi a subspace vector
+  //        should be equal to Project/Apply/Promote + inner product
+  (*linop)(check,subspace[0],PLUS);
+  Real n2 = norm2(check);
+  ldop.ProjectToSubspace(subspace[0],decomp);
+  ldop.Apply(decomp,Aphi);
+  ldop.PromoteFromSubspace(Aphi,check);
+  Complex inn = innerProduct(subspace[0],check);
+  QDPIO::cout << "phi^dag Ddag D phi check " << n2 << " " <<inn <<endl;
+    //
+    // Subspace Inverse x A applied on vector already lying in subspace
+    // should be the same as the orig vector
+    //
+
+  multi1d<DComplex> AinvAphi(ns);
+  ldop.ProjectToSubspace(subspace[0],decomp);
+  ldop.Apply(decomp,Aphi);
+  for(int s=0;s<ns;s++){
+    QDPIO::cout << "Aphi "<<s<<" " << Aphi[s]<<endl;
+  }
+  ldop.ApplyInverse(Aphi,AinvAphi);
+  for(int s=0;s<ns;s++){
+    QDPIO::cout << "AinvAphi "<<s<<" " << AinvAphi[s]<<endl;
+  }
+  ldop.PromoteFromSubspace(AinvAphi,check);
+  QDPIO::cout << "AinvA check n2diff "<< norm2(check-subspace[0])<<endl;
+
+#else
+  // Launch bagel at it
+  BfmWrapperParams BWP;
+  BWP.BfmInverter = BfmInv_CG; 
+  BWP.BfmMatrix   = BfmMat_M;
+  BWP.BfmPrecision= Bfm64bit;
+  BWP.MaxIter     = 10000;
+  BWP.RsdTarget.resize(1);
+  BWP.RsdTarget[0]= 1.0e-6;
+  BWP.Delta = 1.0e-4;
+  BWP.BAP = parms;
+
+  multi1d<LatticeFermion> subspacetmp(Ls);
+  
+  multi1d<LatticeFermion> guess(Ls);
+  multi1d<LatticeFermion> eta(Ls);
+  multi1d<LatticeFermion> eta_s(Ls);
+  multi1d<LatticeFermion> sol(Ls);
+  multi1d<LatticeFermion> defect(Ls);
+  multi1d<LatticeFermion> tmp(Ls);
+  multi1d<LatticeFermion> residual(Ls);
+  LatticeFermion ferm;
+  gaussian(ferm);
+  eta=zero;
+  eta[0]   = chiralProjectPlus (ferm);
+  eta[Ls-1]= chiralProjectMinus(ferm);
+
+  BfmWrapper bfm(BWP);
+  bfm.links = u;
+
+
+  //  subspace[0] = residual;
+
+  // Prepare subspace Luscher's way
+  for(int g=0;g<NumberGaussian;g++){
+    for(int i=0;i<5;i++){
+      bfm.invParam.BfmMatrix = BfmMat_Mdag;
+      bfm.bfmInvert5d<double>(subspacetmp,subspace[g]);
+      bfm.invParam.BfmMatrix = BfmMat_M;
+      bfm.bfmInvert5d<double>(subspacetmp,subspace[g]);
+      subspace[g]=subspacetmp;
+    }
+  }  
+  LittleDiracOperator ldop(4,subspace);
+  int ns = ldop.SubspaceDimension();
+
+  QDPIO::cout << "subspace dimension is "<< ns<<endl;
+  ldop.ComputeLittleMatrix(linop);
+
+  QDPIO::cout << "UNDEFLATED"<<endl;
+  bfm.bfmInvert5d<double>(sol,eta);
+  (*linop)(tmp,sol,PLUS);
+  (*linop)(residual,tmp,MINUS);
+  residual=residual-eta;
+  QDPIO::cout << "Residual norm "<<norm2(residual)<<endl;
+
+  multi1d<DComplex>  res(ns);
+  multi1d<DComplex> Ares(ns);
+
+  ldop.ProjectToSubspace(eta,res);
+  ldop.PromoteFromSubspace(res,eta_s);
+  ldop.ApplyInverse(res,Ares);
+  ldop.PromoteFromSubspace(Ares,guess);
+  QDPIO::cout << "test Guess norm "<<norm2(guess)<<"  Source norm "<< norm2(eta) << " eta_s "<< norm2(eta_s)<< endl;
+
+  defect=zero;
+  (*linop)(tmp,guess,PLUS);
+  (*linop)(defect,tmp,MINUS);
+  
+  Real dn =norm2(defect-eta);
+  Real rn =norm2(eta) ;
+  QDPIO::cout << "n2diff = "<< dn/rn << " eta  norm " << rn << " resid "<<dn <<endl;
+
+  ldop.ProjectToSubspace(defect,res);
+  ldop.PromoteFromSubspace(res,defect);
+  dn =norm2(defect-eta_s);
+  rn =norm2(eta_s) ;
+  QDPIO::cout << "n2diff = "<< dn/rn << " eta_s norm " << rn << " resid "<<dn <<endl;
+
+  
+  QDPIO::cout << "DEFLATED"<<endl;
+  bfm.bfmInvert5d<double>(guess,eta);
+  
+  sol = sol + defect;
+  (*linop)(tmp,sol,PLUS);
+  (*linop)(residual,tmp,MINUS);
+  residual=residual-eta;
+  
+  QDPIO::cout << "Residual norm "<<norm2(residual)<<endl;
+
+#endif
+
+}
